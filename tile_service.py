@@ -102,7 +102,7 @@ def _metadata_int(image: pyvips.Image, name: str, default: int = 0) -> int:
         return default
 
 
-def _load_level(blob_client: BlobClient, level: NativeLevel) -> pyvips.Image:
+def _load_level(blob_client: BlobClient, level: NativeLevel) -> tuple[pyvips.Image, AzureBlobSource]:
     source = AzureBlobSource(blob_client)
     options: dict[str, object] = {"access": "random", "page": 0}
     if level.source == "subifd":
@@ -111,9 +111,8 @@ def _load_level(blob_client: BlobClient, level: NativeLevel) -> pyvips.Image:
         options["page"] = level.index
         
     image = pyvips.Image.tiffload_source(source, **options)
-    # Prevent garbage collection of the source while the image is in use
-    image._source = source  
-    return image
+    # Return the source too so the caller can keep it alive
+    return image, source
 
 
 def _same_image_shape(base_width: int, base_height: int, width: int, height: int) -> bool:
@@ -140,7 +139,6 @@ def _try_subifd_levels(blob_client: BlobClient, base_image: pyvips.Image, base: 
         try:
             source = AzureBlobSource(blob_client)
             image = pyvips.Image.tiffload_source(source, page=0, subifd=index, access="random")
-            image._source = source
         except pyvips.Error:
             break
         candidate = NativeLevel(image.width, image.height, "subifd", index)
@@ -158,7 +156,6 @@ def _try_page_levels(blob_client: BlobClient, page_count: int, base: NativeLevel
         try:
             source = AzureBlobSource(blob_client)
             image = pyvips.Image.tiffload_source(source, page=page, access="random")
-            image._source = source
         except pyvips.Error:
             break
         candidate = NativeLevel(image.width, image.height, "page", page)
@@ -184,7 +181,6 @@ def discover_pyramid(blob_client: BlobClient) -> Pyramid:
             
         source = AzureBlobSource(blob_client)
         base_image = pyvips.Image.tiffload_source(source, page=0, access="random")
-        base_image._source = source
         base = NativeLevel(base_image.width, base_image.height, "page", 0)
 
         reduced = _try_subifd_levels(blob_client, base_image, base)
@@ -282,7 +278,7 @@ def get_tile(blob_client: BlobClient, osd_level: int, tile_x: int, tile_y: int) 
     )
 
     try:
-        image = _load_level(blob_client, native)
+        image, _keep_alive_source = _load_level(blob_client, native)
 
         source_left = math.floor(tile_left * native.width / target_width)
         source_top = math.floor(tile_top * native.height / target_height)
