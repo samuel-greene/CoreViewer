@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass
-from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
 import pyvips
+from azure.storage.blob import BlobClient
 
 TILE_SIZE = 256
 JPEG_QUALITY = 85
@@ -39,8 +39,58 @@ class Pyramid:
 
     @property
     def osd_max_level(self) -> int:
-        # OpenSeadragon/Deep Zoom level max_level is the full-resolution image.
         return math.ceil(math.log2(max(self.width, self.height))) if max(self.width, self.height) > 1 else 0
+
+
+class AzureBlobSource(pyvips.SourceCustom):
+    """A pyvips Custom Source to stream TIFFs directly from Azure Blob Storage."""
+    def __init__(self, blob_client: BlobClient, chunk_size: int = 1024 * 1024):
+        super().__init__()
+        self.blob_client = blob_client
+        props = self.blob_client.get_blob_properties()
+        self.length = props.size
+        self.offset = 0
+        
+        # Simple chunk caching to drastically reduce HTTP overhead 
+        # for frequent tiny reads (like TIFF headers/IFDs).
+        self.chunk_size = chunk_size
+        self.buffer_start = 0
+        self.buffer = b""
+
+        self.on_read(self._read)
+        self.on_seek(self._seek)
+
+    def _read(self, length: int) -> bytes:
+        if self.offset >= self.length:
+            return b""
+
+        # If the requested range is fully inside our current buffer:
+        if self.buffer and self.buffer_start <= self.offset and (self.offset + length) <= (self.buffer_start + len(self.buffer)):
+            start_idx = self.offset - self.buffer_start
+            data = self.buffer[start_idx : start_idx + length]
+            self.offset += len(data)
+            return data
+
+        # Otherwise, fetch a larger chunk to amortize HTTP latency
+        fetch_len = max(length, self.chunk_size)
+        fetch_len = min(fetch_len, self.length - self.offset)
+
+        stream = self.blob_client.download_blob(offset=self.offset, length=fetch_len)
+        self.buffer = stream.readall()
+        self.buffer_start = self.offset
+
+        data = self.buffer[:length]
+        self.offset += len(data)
+        return data
+
+    def _seek(self, offset: int, whence: int) -> int:
+        if whence == os.SEEK_SET:
+            self.offset = offset
+        elif whence == os.SEEK_CUR:
+            self.offset += offset
+        elif whence == os.SEEK_END:
+            self.offset = self.length + offset
+        return self.offset
 
 
 def _metadata_int(image: pyvips.Image, name: str, default: int = 0) -> int:
@@ -52,13 +102,18 @@ def _metadata_int(image: pyvips.Image, name: str, default: int = 0) -> int:
         return default
 
 
-def _load_level(path: Path, level: NativeLevel) -> pyvips.Image:
+def _load_level(blob_client: BlobClient, level: NativeLevel) -> pyvips.Image:
+    source = AzureBlobSource(blob_client)
     options: dict[str, object] = {"access": "random", "page": 0}
     if level.source == "subifd":
         options["subifd"] = level.index
     else:
         options["page"] = level.index
-    return pyvips.Image.tiffload(str(path), **options)
+        
+    image = pyvips.Image.tiffload_source(source, **options)
+    # Prevent garbage collection of the source while the image is in use
+    image._source = source  
+    return image
 
 
 def _same_image_shape(base_width: int, base_height: int, width: int, height: int) -> bool:
@@ -75,19 +130,17 @@ def _is_next_reduced_level(previous: NativeLevel, candidate: NativeLevel, base: 
     )
 
 
-def _try_subifd_levels(path: Path, base_image: pyvips.Image, base: NativeLevel) -> list[NativeLevel]:
-    """Read reduced images referenced by the first page's TIFF SUBIFD tag."""
+def _try_subifd_levels(blob_client: BlobClient, base_image: pyvips.Image, base: NativeLevel) -> list[NativeLevel]:
     levels: list[NativeLevel] = []
     count = _metadata_int(base_image, "n-subifds")
 
-    # Modern libvips exposes n-subifds. Older builds may not, so probe until the
-    # loader rejects an index. A candidate is accepted only if dimensions form
-    # a decreasing pyramid with the same aspect ratio as the main image.
     indexes = range(min(count, MAX_DISCOVERED_LEVELS)) if count else range(MAX_DISCOVERED_LEVELS)
     previous = base
     for index in indexes:
         try:
-            image = pyvips.Image.tiffload(str(path), page=0, subifd=index, access="random")
+            source = AzureBlobSource(blob_client)
+            image = pyvips.Image.tiffload_source(source, page=0, subifd=index, access="random")
+            image._source = source
         except pyvips.Error:
             break
         candidate = NativeLevel(image.width, image.height, "subifd", index)
@@ -98,55 +151,65 @@ def _try_subifd_levels(path: Path, base_image: pyvips.Image, base: NativeLevel) 
     return levels
 
 
-def _try_page_levels(path: Path, page_count: int, base: NativeLevel) -> list[NativeLevel]:
-    """Conservatively detect a classic TIFF pyramid stored as top-level pages."""
+def _try_page_levels(blob_client: BlobClient, page_count: int, base: NativeLevel) -> list[NativeLevel]:
     levels: list[NativeLevel] = []
     previous = base
     for page in range(1, min(page_count, MAX_DISCOVERED_LEVELS)):
-        image = pyvips.Image.tiffload(str(path), page=page, access="random")
+        try:
+            source = AzureBlobSource(blob_client)
+            image = pyvips.Image.tiffload_source(source, page=page, access="random")
+            image._source = source
+        except pyvips.Error:
+            break
         candidate = NativeLevel(image.width, image.height, "page", page)
         if not _is_next_reduced_level(previous, candidate, base):
-            # Equal-sized OME pages are usually Z/C/T planes, not pyramid levels.
-            # Stopping here avoids treating an arbitrary page as a zoom level.
             break
         levels.append(candidate)
         previous = candidate
     return levels
 
 
-@lru_cache(maxsize=16)
-def _discover_pyramid_cached(path_text: str, modified_ns: int) -> Pyramid:
-    del modified_ns  # Included in the cache key so replacing a scan invalidates metadata.
-    path = Path(path_text)
+# Custom dictionary cache to replace lru_cache since Azure's BlobClient object 
+# changes memory addresses and breaks normal LRU hashing.
+_pyramid_cache: dict[tuple[str, float], Pyramid] = {}
+
+def discover_pyramid(blob_client: BlobClient) -> Pyramid:
     try:
-        base_image = pyvips.Image.tiffload(str(path), page=0, access="random")
+        props = blob_client.get_blob_properties()
+        modified_ts = props.last_modified.timestamp()
+        
+        key = (blob_client.blob_name, modified_ts)
+        if key in _pyramid_cache:
+            return _pyramid_cache[key]
+            
+        source = AzureBlobSource(blob_client)
+        base_image = pyvips.Image.tiffload_source(source, page=0, access="random")
+        base_image._source = source
         base = NativeLevel(base_image.width, base_image.height, "page", 0)
 
-        # Bio-Formats-style OME pyramids normally use SUBIFDs. Classic pyramidal
-        # TIFFs may instead put reduced images in the top-level page chain. We
-        # verify dimensions in either case; page N is never assumed to be level N.
-        reduced = _try_subifd_levels(path, base_image, base)
+        reduced = _try_subifd_levels(blob_client, base_image, base)
         if not reduced:
-            reduced = _try_page_levels(path, base_image.get_n_pages(), base)
+            reduced = _try_page_levels(blob_client, base_image.get_n_pages(), base)
 
-        return Pyramid(base.width, base.height, tuple([base, *reduced]))
+        pyramid = Pyramid(base.width, base.height, tuple([base, *reduced]))
+        
+        # Keep cache from growing infinitely
+        if len(_pyramid_cache) >= 16:
+            _pyramid_cache.pop(next(iter(_pyramid_cache)))
+        _pyramid_cache[key] = pyramid
+        return pyramid
+        
     except pyvips.Error as exc:
-        logger.exception("pyvips failed while inspecting %s", path)
+        logger.exception("pyvips failed while inspecting %s", blob_client.blob_name)
         raise ScanReadError(f"libvips could not read this TIFF: {exc}") from exc
+    except Exception as exc:
+        raise ScanReadError(f"Could not access blob: {exc}") from exc
 
 
-def discover_pyramid(path: Path) -> Pyramid:
-    try:
-        stat = path.stat()
-    except OSError as exc:
-        raise ScanReadError(f"Could not access scan: {exc}") from exc
-    return _discover_pyramid_cached(str(path.resolve()), stat.st_mtime_ns)
-
-
-def get_scan_info(path: Path) -> dict[str, object]:
-    pyramid = discover_pyramid(path)
+def get_scan_info(blob_client: BlobClient) -> dict[str, object]:
+    pyramid = discover_pyramid(blob_client)
     return {
-        "id": path.name,
+        "id": blob_client.blob_name,
         "width": pyramid.width,
         "height": pyramid.height,
         "pyramid_levels": len(pyramid.levels),
@@ -171,8 +234,6 @@ def _deep_zoom_dimensions(pyramid: Pyramid, osd_level: int) -> tuple[int, int]:
 
 
 def _select_native_level(pyramid: Pyramid, target_width: int, target_height: int) -> NativeLevel:
-    # Choose the smallest stored level that is still at least as detailed as the
-    # requested Deep Zoom level. This minimizes decoding while avoiding upscaling.
     suitable = [
         level
         for level in pyramid.levels
@@ -189,14 +250,12 @@ def _jpeg_ready(image: pyvips.Image) -> pyvips.Image:
     if image.bands == 2:
         image = image[0]
     if image.format != "uchar":
-        # shift=True maps integer bit depths down to 8-bit without calculating a
-        # whole-image min/max (which would defeat region-based tile reads).
         image = image.cast("uchar", shift=True)
     return image
 
 
-def get_tile(path: Path, osd_level: int, tile_x: int, tile_y: int) -> bytes:
-    pyramid = discover_pyramid(path)
+def get_tile(blob_client: BlobClient, osd_level: int, tile_x: int, tile_y: int) -> bytes:
+    pyramid = discover_pyramid(blob_client)
     if osd_level < 0 or osd_level > pyramid.osd_max_level:
         raise InvalidTileRequest(f"Level must be between 0 and {pyramid.osd_max_level}")
     if tile_x < 0 or tile_y < 0:
@@ -223,10 +282,8 @@ def get_tile(path: Path, osd_level: int, tile_x: int, tile_y: int) -> bytes:
     )
 
     try:
-        image = _load_level(path, native)
+        image = _load_level(blob_client, native)
 
-        # Map the Deep Zoom tile rectangle into the chosen stored TIFF level.
-        # Rounding outward ensures no source pixels are missed at level edges.
         source_left = math.floor(tile_left * native.width / target_width)
         source_top = math.floor(tile_top * native.height / target_height)
         source_right = math.ceil((tile_left + tile_width) * native.width / target_width)
@@ -246,7 +303,6 @@ def get_tile(path: Path, osd_level: int, tile_x: int, tile_y: int) -> bytes:
                 vscale=tile_height / region.height,
                 kernel="lanczos3",
             )
-            # libvips rounding can very occasionally add one pixel.
             region = region.crop(0, 0, min(tile_width, region.width), min(tile_height, region.height))
             if region.width != tile_width or region.height != tile_height:
                 region = region.embed(0, 0, tile_width, tile_height, extend="copy")
@@ -255,7 +311,7 @@ def get_tile(path: Path, osd_level: int, tile_x: int, tile_y: int) -> bytes:
     except pyvips.Error as exc:
         logger.exception(
             "pyvips failed: scan=%s level=%s tile=(%s,%s)",
-            path.name,
+            blob_client.blob_name,
             osd_level,
             tile_x,
             tile_y,
