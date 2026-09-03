@@ -1,22 +1,159 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OME-TIFF Viewer</title>
-  <link rel="stylesheet" href="/styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/openseadragon@5.0.1/build/openseadragon/openseadragon.min.js"></script>
+  <meta charset="UTF-8">
+  <title>OME-TIFF Directory Viewer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+      background-color: #000;
+      color: #d1d5db;
+      font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Courier New', monospace;
+      overflow: hidden;
+    }
+    #sidebar {
+      width: 280px;
+      min-width: 280px;
+      background-color: #0a0a0a;
+      border-right: 1px solid #1a1a1a;
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+      font-size: 13px;
+    }
+    #path-header {
+      color: #38bdf8;
+      padding-bottom: 10px;
+      word-break: break-all;
+      font-weight: bold;
+    }
+    .table-header {
+      display: flex;
+      color: #6b7280;
+      border-bottom: 1px solid #222222;
+      padding-bottom: 4px;
+      margin-bottom: 6px;
+    }
+    .type-col { width: 55px; flex-shrink: 0; }
+    .name-col { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-list { flex: 1; overflow-y: auto; }
+    .row {
+      display: flex;
+      padding: 3px 2px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .row:hover { background-color: #141414; }
+    .row.active { background-color: #1e3a8a; color: #ffffff; }
+    .tag-dir, .tag-img { color: #6b7280; }
+    .item-link { color: #38bdf8; text-decoration: none; }
+    .row.active .item-link { color: #ffffff; text-decoration: underline; }
+    #viewer-container {
+      flex: 1;
+      height: 100%;
+      background-color: #000;
+    }
+  </style>
 </head>
 <body>
-  <header class="topbar">
-    <h1>OME-TIFF Viewer</h1>
-    <label for="scan-select">Scan</label>
-    <select id="scan-select" disabled>
-      <option>Loading scans…</option>
-    </select>
-    <span id="status" role="status">Starting…</span>
-  </header>
-  <main id="viewer" aria-label="Microscopy image viewer"></main>
-  <script src="/viewer.js"></script>
+  <div id="sidebar">
+    <div id="path-header">Index of /</div>
+    <div class="table-header">
+      <span class="type-col">Type</span>
+      <span class="name-col">Name</span>
+    </div>
+    <div id="file-list" class="file-list"></div>
+  </div>
+  <div id="viewer-container"></div>
+
+  <script>
+    let viewer = null;
+
+    function initViewer() {
+      viewer = OpenSeadragon({
+        id: "viewer-container",
+        prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
+        showNavigationControl: true,
+        animationTime: 0.5,
+        blendingTime: 0.1,
+        maxZoomPixelRatio: 2,
+        backgroundColor: "#000000"
+      });
+    }
+
+    async function loadDirectory(prefix = "") {
+      const res = await fetch(`/api/scans?prefix=${encodeURIComponent(prefix)}`);
+      const data = await res.json();
+
+      document.getElementById("path-header").textContent = `Index of ${data.current_path}`;
+      const listEl = document.getElementById("file-list");
+      listEl.innerHTML = "";
+
+      // Parent Directory row
+      if (data.parent_prefix !== null) {
+        listEl.appendChild(createRow("[DIR]", "..", () => loadDirectory(data.parent_prefix)));
+      }
+
+      // Subdirectories
+      data.directories.forEach(dir => {
+        listEl.appendChild(createRow("[DIR]", dir.name, () => loadDirectory(dir.path)));
+      });
+
+      // Scan files
+      data.files.forEach(file => {
+        const row = createRow("[IMG]", file.name, () => {
+          document.querySelectorAll(".row").forEach(r => r.classList.remove("active"));
+          row.classList.add("active");
+          openImage(file.id);
+        });
+        listEl.appendChild(row);
+      });
+    }
+
+    function createRow(typeTag, name, onClick) {
+      const row = document.createElement("div");
+      row.className = "row";
+
+      const typeSpan = document.createElement("span");
+      typeSpan.className = "type-col tag-dir";
+      typeSpan.textContent = typeTag;
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "name-col item-link";
+      nameSpan.textContent = name;
+
+      row.appendChild(typeSpan);
+      row.appendChild(nameSpan);
+      row.onclick = onClick;
+      return row;
+    }
+
+    async function openImage(scanId) {
+      const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info`);
+      if (!infoRes.ok) return;
+      const info = await infoRes.json();
+
+      const tileSource = {
+        height: info.height,
+        width: info.width,
+        tileSize: info.tile_size,
+        maxLevel: info.osd_max_level,
+        getTileUrl: function (level, x, y) {
+          return `/api/scans/${encodeURIComponent(scanId)}/tiles/${level}/${x}/${y}.jpg`;
+        }
+      };
+
+      viewer.open(tileSource);
+    }
+
+    window.onload = () => {
+      initViewer();
+      loadDirectory("");
+    };
+  </script>
 </body>
 </html>
