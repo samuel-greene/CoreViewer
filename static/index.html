@@ -78,9 +78,13 @@
         id: "viewer-container",
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
         showNavigationControl: true,
-        animationTime: 0.5,
-        blendingTime: 0.1,
+        
+        // Performance optimizations
+        imageLoaderLimit: 10,       // Max parallel requests (default is 6)
+        blendingTime: 0,            // Instantly render tiles without cross-fade delays
+        animationTime: 0.3,         // Faster pan/zoom transition response
         maxZoomPixelRatio: 2,
+        timeout: 30000,
         backgroundColor: "#000000"
       });
     }

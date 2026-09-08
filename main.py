@@ -39,15 +39,15 @@ container_client = blob_service_client.get_container_client(AZURE_CONTAINER_NAME
 app = FastAPI(title="OME-TIFF Viewer (Azure Blob Backend)")
 
 
+# from azure.core.exceptions import ResourceNotFoundError
+
 def find_scan(scan_id: str):
-    """Resolve a scan in Azure Blob Storage."""
+    """Instantiate blob client instantly without making a blocking network call."""
     if not scan_id.lower().endswith((".tif", ".tiff")):
         raise HTTPException(status_code=404, detail="Scan not found")
-
-    blob_client = container_client.get_blob_client(scan_id)
-    if not blob_client.exists():
-        raise HTTPException(status_code=404, detail="Scan not found")
-    return blob_client
+    
+    # Fast, local operation (0ms)
+    return container_client.get_blob_client(scan_id)
 
 
 @app.get("/api/scans")
@@ -84,19 +84,54 @@ def list_scans(prefix: str = "") -> dict[str, object]:
         "files": sorted(files, key=lambda f: f["name"].lower()),
     }
 
+import tempfile
+from pathlib import Path
+
+# Local disk directory for cached TIFF files
+CACHE_DIR = Path(tempfile.gettempdir()) / "tiff_cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_local_scan_path(scan_id: str) -> Path:
+    """Retrieves TIFF from local SSD cache or downloads it if missing."""
+    # Create a safe filename for flat storage
+    safe_filename = scan_id.replace("/", "_")
+    local_path = CACHE_DIR / safe_filename
+
+    if not local_path.exists():
+        logger.info("Downloading %s from Azure Blob Storage to local cache...", scan_id)
+        blob_client = find_scan(scan_id)
+        
+        try:
+            with open(local_path, "wb") as download_file:
+                download_stream = blob_client.download_blob()
+                download_file.write(download_stream.readall())
+        except ResourceNotFoundError:
+            if local_path.exists():
+                local_path.unlink()
+            raise HTTPException(status_code=404, detail="Scan not found")
+        except Exception as e:
+            if local_path.exists():
+                local_path.unlink()
+            logger.error("Failed to download blob %s: %s", scan_id, e)
+            raise HTTPException(status_code=500, detail="Failed to retrieve file from storage")
+
+    return local_path
+
+from functools import lru_cache
+
+# Cache up to 4096 JPEG tiles in RAM
+@lru_cache(maxsize=4096)
+def render_tile_cached(scan_id: str, level: int, x: int, y: int) -> bytes:
+    local_path = get_local_scan_path(scan_id)
+    # Pass the local file path string to your tile service
+    return get_tile(str(local_path), level, x, y)
+
 
 @app.get("/api/scans/{scan_id}/info")
 def scan_info(scan_id: str) -> dict[str, object]:
-    blob_client = find_scan(scan_id)
+    local_path = get_local_scan_path(scan_id)
     try:
-        info = get_scan_info(blob_client)
-        logger.info(
-            "Scan opened: %s (%sx%s, %s native pyramid levels)",
-            scan_id,
-            info["width"],
-            info["height"],
-            info["pyramid_levels"],
-        )
+        info = get_scan_info(str(local_path))
         return info
     except ScanReadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -104,14 +139,15 @@ def scan_info(scan_id: str) -> dict[str, object]:
 
 @app.get("/api/scans/{scan_id}/tiles/{level}/{x}/{y}.jpg")
 def tile(scan_id: str, level: int, x: int, y: int) -> Response:
-    blob_client = find_scan(scan_id)
-    logger.info("Tile request: scan=%s level=%s x=%s y=%s", scan_id, level, x, y)
     try:
-        jpeg = get_tile(blob_client, level, x, y)
+        jpeg = render_tile_cached(scan_id, level, x, y)
         return Response(
             content=jpeg,
             media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers={
+                # Tell browsers to aggressively cache tiles locally for 24 hours
+                "Cache-Control": "public, max-age=86400, immutable"
+            },
         )
     except InvalidTileRequest as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

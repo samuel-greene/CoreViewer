@@ -249,6 +249,11 @@ def _jpeg_ready(image: pyvips.Image) -> pyvips.Image:
         image = image.cast("uchar", shift=True)
     return image
 
+from functools import lru_cache
+
+@lru_cache(maxsize=2048)
+def get_cached_tile(scan_id: str, level: int, x: int, y: int) -> bytes:
+    get_tile()
 
 def get_tile(blob_client: BlobClient, osd_level: int, tile_x: int, tile_y: int) -> bytes:
     pyramid = discover_pyramid(blob_client)
