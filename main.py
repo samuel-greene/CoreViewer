@@ -119,8 +119,8 @@ def get_local_scan_path(scan_id: str) -> Path:
 
 from functools import lru_cache
 
-# Cache up to 4096 JPEG tiles in RAM
-@lru_cache(maxsize=4096)
+# Reduce cache to hold roughly ~100-200MB of tiles instead of several GBs
+@lru_cache(maxsize=512)
 def render_tile_cached(scan_id: str, level: int, x: int, y: int) -> bytes:
     local_path = get_local_scan_path(scan_id)
     # Pass the local file path string to your tile service
