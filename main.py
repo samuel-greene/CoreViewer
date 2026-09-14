@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from tile_service import (
@@ -120,5 +120,13 @@ def tile(scan_id: str, level: int, x: int, y: int) -> Response:
     except ScanReadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+@app.get("/api/scans/{scan_id:path}/download")
+def download_scan(scan_id: str) -> FileResponse:
+    local_path = get_local_scan_path(scan_id)
+    return FileResponse(
+        path=local_path,
+        filename=local_path.name,
+        media_type="image/tiff"
+    )
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

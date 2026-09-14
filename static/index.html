@@ -108,17 +108,19 @@
       });
 
       // Scan files
+      // Scan files
       data.files.forEach(file => {
+        const downloadUrl = `/api/scans/${encodeURIComponent(file.id)}/download`;
         const row = createRow("[IMG]", file.name, () => {
           document.querySelectorAll(".row").forEach(r => r.classList.remove("active"));
           row.classList.add("active");
           openImage(file.id);
-        });
+        }, downloadUrl);
         listEl.appendChild(row);
       });
     }
 
-    function createRow(typeTag, name, onClick) {
+    function createRow(typeTag, name, onClick, downloadUrl = null) {
       const row = document.createElement("div");
       row.className = "row";
 
@@ -129,9 +131,23 @@
       const nameSpan = document.createElement("span");
       nameSpan.className = "name-col item-link";
       nameSpan.textContent = name;
+      nameSpan.title = name; // Helpful for long names that truncate
 
       row.appendChild(typeSpan);
       row.appendChild(nameSpan);
+
+      // Append download button if URL is provided
+      if (downloadUrl) {
+        const dlBtn = document.createElement("a");
+        dlBtn.className = "download-btn";
+        dlBtn.innerHTML = "⭳"; // Unicode download icon
+        dlBtn.href = downloadUrl;
+        dlBtn.download = name;
+        dlBtn.title = "Download " + name;
+        dlBtn.onclick = (e) => e.stopPropagation(); // Prevents the row click event
+        row.appendChild(dlBtn);
+      }
+
       row.onclick = onClick;
       return row;
     }
