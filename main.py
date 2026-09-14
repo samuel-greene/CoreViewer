@@ -19,15 +19,41 @@ from tile_service import (
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-# This is where the Azure File Share is mounted in your Container App
-MOUNT_DIR = Path("/mnt/images").resolve()
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logging.getLogger("pyvips").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+
+def _resolve_mount_dir() -> Path:
+    """Picks the directory to serve scans from.
+
+    - IMAGES_DIR env var always wins if set (explicit override).
+    - Otherwise, use /mnt/images if it exists (Azure Container App mount).
+    - Otherwise, fall back to a local "scans" folder next to this file,
+      so the app can be run and tested locally without the Azure mount.
+    """
+    override = os.environ.get("IMAGES_DIR")
+    if override:
+        return Path(override).resolve()
+
+    azure_mount = Path("/mnt/images")
+    if azure_mount.exists():
+        return azure_mount.resolve()
+
+    local_scans = BASE_DIR / "scans"
+    local_scans.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "/mnt/images not found; falling back to local scans directory at %s",
+        local_scans,
+    )
+    return local_scans.resolve()
+
+
+# Where scans are read from. See _resolve_mount_dir for override rules.
+MOUNT_DIR = _resolve_mount_dir()
 
 app = FastAPI(title="OME-TIFF Viewer (Local Mount Backend)")
 
