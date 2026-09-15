@@ -78,6 +78,7 @@ body {
 
 .row:hover { background-color: #2d302f; }
 .row.active { background-color: #1e3a8a; color: #ffffff; }
+.row[hidden] { display: none; }
 .tag-dir, .tag-img { color: #6b7280; }
 .item-link { color: #38bdf8; text-decoration: none; }
 .row.active .item-link { color: #ffffff; text-decoration: underline; }
