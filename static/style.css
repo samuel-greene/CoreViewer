@@ -124,9 +124,49 @@ body.resizing #viewer-container {
   pointer-events: none;
 }
 
+/* Update the existing #viewer-container to include position: relative */
 #viewer-container {
   flex: 1;
   height: 100%;
   background-color: #606060;
   min-width: 100px;
+  position: relative; /* Added to anchor the toolbar */
+}
+
+/* New Drawing Toolbar Styles */
+#draw-toolbar {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  z-index: 100;
+  background: #1d1f20;
+  border: 1px solid #353737;
+  border-radius: 6px;
+  padding: 6px;
+  display: flex;
+  gap: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+.toolbar-btn {
+  background: #2d302f;
+  color: #e6edf3;
+  border: 1px solid #4b4f4f;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.toolbar-btn:hover {
+  background: #353737;
+}
+
+/* Active state for when drawing mode is toggled on */
+.toolbar-btn.active {
+  background: #ef4444; /* Laser pointer red */
+  color: #ffffff;
+  border-color: #b91c1c;
 }

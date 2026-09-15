@@ -20,7 +20,12 @@
     <div id="no-results" class="no-results" hidden>No matches in this folder</div>
   </div>
   <div id="divider" title="Drag to resize"></div>
-  <div id="viewer-container"></div>
+  <div id="viewer-container">
+    <div id="draw-toolbar">
+      <button id="btn-draw" class="toolbar-btn">Laser Pointer</button>
+      <button id="btn-clear" class="toolbar-btn">Clear</button>
+    </div>
+  </div>
 
   <script>
     let viewer = null;
@@ -75,6 +80,7 @@
         id: "viewer-container",
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
         showNavigationControl: true,
+        
 
         // Performance optimizations
         imageLoaderLimit: 10,       // Max parallel requests (default is 6)
@@ -196,8 +202,132 @@
       document.getElementById("no-results").hidden = !(query !== "" && visibleCount === 0);
     }
 
+    let isDrawMode = false;
+    let strokes = []; // Stores our laser pointer markings
+    let drawCanvas, drawCtx;
+
+    function initDrawTool() {
+      // 1. Mount overlay to outer container, NOT internal viewer.canvas
+      const container = document.getElementById('viewer-container');
+      
+      drawCanvas = document.createElement('canvas');
+      drawCanvas.style.position = 'absolute';
+      drawCanvas.style.top = '0';
+      drawCanvas.style.left = '0';
+      drawCanvas.style.width = '100%';
+      drawCanvas.style.height = '100%';
+      drawCanvas.style.pointerEvents = 'none'; // Click-through to OSD on startup
+      drawCanvas.style.zIndex = '10';          // Sit directly over OSD layers
+      
+      container.appendChild(drawCanvas);
+      drawCtx = drawCanvas.getContext('2d');
+
+      // 2. Setup Toolbar Interactions
+      const btnDraw = document.getElementById('btn-draw');
+      const btnClear = document.getElementById('btn-clear');
+
+      btnDraw.onclick = () => {
+        isDrawMode = !isDrawMode;
+        btnDraw.classList.toggle('active', isDrawMode);
+
+        // Toggle click-through and OSD mouse navigation
+        drawCanvas.style.pointerEvents = isDrawMode ? 'auto' : 'none';
+        viewer.setMouseNavEnabled(!isDrawMode);
+
+        if (!isDrawMode) {
+          isMouseDown = false;
+          currentStroke = null;
+        }
+      };
+
+      btnClear.onclick = () => {
+        strokes = [];
+        redraw();
+      };
+
+      // 3. Track drawing with isolated native mouse events
+      let isMouseDown = false;
+      let currentStroke = null;
+
+      drawCanvas.addEventListener('mousedown', (e) => {
+        if (!isDrawMode) return;
+        isMouseDown = true;
+
+        const rect = drawCanvas.getBoundingClientRect();
+        const pixelPos = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
+        
+        const viewportPos = viewer.viewport.pointFromPixel(pixelPos);
+        const imagePos = viewer.viewport.viewportToImageCoordinates(viewportPos);
+        
+        currentStroke = [imagePos];
+        strokes.push(currentStroke);
+        redraw();
+      });
+
+      drawCanvas.addEventListener('mousemove', (e) => {
+        if (!isDrawMode || !isMouseDown || !currentStroke) return;
+
+        const rect = drawCanvas.getBoundingClientRect();
+        const pixelPos = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
+
+        const viewportPos = viewer.viewport.pointFromPixel(pixelPos);
+        const imagePos = viewer.viewport.viewportToImageCoordinates(viewportPos);
+
+        currentStroke.push(imagePos);
+        redraw();
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isMouseDown) {
+          isMouseDown = false;
+          currentStroke = null;
+        }
+      });
+
+      // 4. Force redraw on pan, zoom, or resize
+      viewer.addHandler('update-viewport', redraw);
+      viewer.addHandler('resize', resizeCanvas);
+
+      setTimeout(resizeCanvas, 100);
+    }
+
+    function resizeCanvas() {
+      const container = document.getElementById('viewer-container');
+      drawCanvas.width = container.clientWidth;
+      drawCanvas.height = container.clientHeight;
+      redraw();
+    }
+
+    function redraw() {
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      if (strokes.length === 0) return;
+
+      drawCtx.strokeStyle = '#ef4444'; // Laser red
+      drawCtx.lineWidth = 4;
+      drawCtx.lineCap = 'round';
+      drawCtx.lineJoin = 'round';
+
+      strokes.forEach(stroke => {
+        if (stroke.length < 2) return;
+        drawCtx.beginPath();
+        
+        // Translate image coordinates back to screen pixels for HTML5 Canvas
+        const firstVp = viewer.viewport.imageToViewportCoordinates(stroke[0]);
+        const firstPx = viewer.viewport.pixelFromPoint(firstVp);
+        drawCtx.moveTo(firstPx.x, firstPx.y);
+
+        for (let i = 1; i < stroke.length; i++) {
+          const vp = viewer.viewport.imageToViewportCoordinates(stroke[i]);
+          const px = viewer.viewport.pixelFromPoint(vp);
+          drawCtx.lineTo(px.x, px.y);
+        }
+        drawCtx.stroke();
+      });
+    }
+
     window.onload = () => {
       initViewer();
+      initDrawTool();
       initResizer();
       document.getElementById("search-box").addEventListener("input", filterRows);
       loadDirectory("");
