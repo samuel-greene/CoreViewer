@@ -3,82 +3,79 @@
 <head>
   <meta charset="UTF-8">
   <title>OME-TIFF Directory Viewer</title>
+  <link rel="stylesheet" href="style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      display: flex;
-      height: 100vh;
-      width: 100vw;
-      background-color: #000;
-      color: #d1d5db;
-      font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Courier New', monospace;
-      overflow: hidden;
-    }
-    #sidebar {
-      width: 280px;
-      min-width: 280px;
-      background-color: #1d1f20;
-      border-right: 1px solid #0f1010;
-      display: flex;
-      flex-direction: column;
-      padding: 10px;
-      font-size: 13px;
-    }
-    #path-header {
-      color: #3fa5d1;
-      padding-bottom: 10px;
-      word-break: break-all;
-      font-weight: bold;
-    }
-    .table-header {
-      display: flex;
-      color: #6b7280;
-      border-bottom: 1px solid #353737;
-      padding-bottom: 4px;
-      margin-bottom: 6px;
-    }
-    .type-col { width: 55px; flex-shrink: 0; }
-    .name-col { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .file-list { flex: 1; overflow-y: auto; }
-    .row {
-      display: flex;
-      padding: 3px 2px;
-      cursor: pointer;
-      user-select: none;
-    }
-    .row:hover { background-color: #2d302f; }
-    .row.active { background-color: #1e3a8a; color: #ffffff; }
-    .tag-dir, .tag-img { color: #6b7280; }
-    .item-link { color: #38bdf8; text-decoration: none; }
-    .row.active .item-link { color: #ffffff; text-decoration: underline; }
-    #viewer-container {
-      flex: 1;
-      height: 100%;
-      background-color: #606060;
-    }
-  </style>
 </head>
 <body>
   <div id="sidebar">
     <div id="path-header">Index of /</div>
+    <div class="search-wrap">
+      <input type="text" id="search-box" placeholder="Filter files and folders…" autocomplete="off" />
+    </div>
     <div class="table-header">
       <span class="type-col">Type</span>
       <span class="name-col">Name</span>
     </div>
     <div id="file-list" class="file-list"></div>
+    <div id="no-results" class="no-results" hidden>No matches in this folder</div>
   </div>
+  <div id="divider" title="Drag to resize"></div>
   <div id="viewer-container"></div>
 
   <script>
     let viewer = null;
+
+    const SIDEBAR_MIN_PX = 160;
+    const SIDEBAR_MAX_RATIO = 0.7; // never let the sidebar eat more than 70% of the window
+    const SIDEBAR_WIDTH_KEY = "ome-viewer-sidebar-width";
+
+    function initResizer() {
+      const sidebar = document.getElementById("sidebar");
+      const divider = document.getElementById("divider");
+
+      // Restore a previously saved width, if any.
+      const savedWidth = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY), 10);
+      if (!Number.isNaN(savedWidth)) {
+        applySidebarWidth(savedWidth);
+      }
+
+      let dragging = false;
+
+      divider.addEventListener("mousedown", (e) => {
+        dragging = true;
+        divider.classList.add("dragging");
+        document.body.classList.add("resizing");
+        e.preventDefault();
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        applySidebarWidth(e.clientX);
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (!dragging) return;
+        dragging = false;
+        divider.classList.remove("dragging");
+        document.body.classList.remove("resizing");
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebar.getBoundingClientRect().width));
+        if (viewer) viewer.viewport.applyConstraints();
+      });
+
+      function applySidebarWidth(clientX) {
+        const maxWidth = window.innerWidth * SIDEBAR_MAX_RATIO;
+        const clamped = Math.min(Math.max(clientX, SIDEBAR_MIN_PX), maxWidth);
+        sidebar.style.width = `${clamped}px`;
+        sidebar.style.minWidth = `${clamped}px`;
+      }
+    }
 
     function initViewer() {
       viewer = OpenSeadragon({
         id: "viewer-container",
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
         showNavigationControl: true,
-        
+
         // Performance optimizations
         imageLoaderLimit: 10,       // Max parallel requests (default is 6)
         blendingTime: 0,            // Instantly render tiles without cross-fade delays
@@ -99,7 +96,9 @@
 
       // Parent Directory row
       if (data.parent_prefix !== null) {
-        listEl.appendChild(createRow("[DIR]", "..", () => loadDirectory(data.parent_prefix)));
+        listEl.appendChild(
+          createRow("[DIR]", "..", () => loadDirectory(data.parent_prefix), null, { isParentNav: true })
+        );
       }
 
       // Subdirectories
@@ -107,7 +106,6 @@
         listEl.appendChild(createRow("[DIR]", dir.name, () => loadDirectory(dir.path)));
       });
 
-      // Scan files
       // Scan files
       data.files.forEach(file => {
         const downloadUrl = `/api/scans/${encodeURIComponent(file.id)}/download`;
@@ -118,11 +116,18 @@
         }, downloadUrl);
         listEl.appendChild(row);
       });
+
+      // Re-apply whatever's currently in the search box, so the filter
+      // persists as you navigate between folders.
+      filterRows();
     }
 
-    function createRow(typeTag, name, onClick, downloadUrl = null) {
+    function createRow(typeTag, name, onClick, downloadUrl = null, options = {}) {
       const row = document.createElement("div");
       row.className = "row";
+      if (options.isParentNav) {
+        row.classList.add("parent-row");
+      }
 
       const typeSpan = document.createElement("span");
       typeSpan.className = "type-col tag-dir";
@@ -140,7 +145,7 @@
       if (downloadUrl) {
         const dlBtn = document.createElement("a");
         dlBtn.className = "download-btn";
-        dlBtn.innerHTML = "download"; // Unicode download icon
+        dlBtn.innerHTML = "[FILE]"; // Unicode download icon
         dlBtn.href = downloadUrl;
         dlBtn.download = name;
         dlBtn.title = "Download " + name;
@@ -170,8 +175,31 @@
       viewer.open(tileSource);
     }
 
+    function filterRows() {
+      const query = document.getElementById("search-box").value.trim().toLowerCase();
+      const rows = document.querySelectorAll("#file-list .row");
+      let visibleCount = 0;
+
+      rows.forEach(row => {
+        // The ".." parent-navigation row always stays visible -- it's
+        // navigation, not a search result.
+        if (row.classList.contains("parent-row")) {
+          row.hidden = false;
+          return;
+        }
+        const name = row.querySelector(".name-col").textContent.toLowerCase();
+        const matches = query === "" || name.includes(query);
+        row.hidden = !matches;
+        if (matches) visibleCount++;
+      });
+
+      document.getElementById("no-results").hidden = !(query !== "" && visibleCount === 0);
+    }
+
     window.onload = () => {
       initViewer();
+      initResizer();
+      document.getElementById("search-box").addEventListener("input", filterRows);
       loadDirectory("");
     };
   </script>

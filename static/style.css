@@ -1,0 +1,131 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: #000;
+  color: #d1d5db;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Courier New', monospace;
+  overflow: hidden;
+}
+
+#sidebar {
+  width: 25%;
+  min-width: 25%;
+  background-color: #1d1f20;
+  border-right: 1px solid #0f1010;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+#path-header {
+  color: #c6d5db;
+  padding-bottom: 10px;
+  word-break: break-all;
+  font-weight: bold;
+}
+
+.search-wrap {
+  padding-bottom: 8px;
+}
+
+#search-box {
+  width: 100%;
+  padding: 6px 8px;
+  background-color: #2d302f;
+  border: 1px solid #4b4f4f;
+  border-radius: 4px;
+  color: #e6edf3;
+  font-family: inherit;
+  font-size: 13px;
+}
+#search-box::placeholder {
+  color: #6b7280;
+}
+#search-box:focus {
+  outline: none;
+  border-color: #38bdf8;
+}
+
+.no-results {
+  color: #6b7280;
+  padding: 8px 2px;
+  font-style: italic;
+}
+
+.table-header {
+  display: flex;
+  color: #6b7280;
+  border-bottom: 1px solid #353737;
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+.type-col { width: 55px; flex-shrink: 0; }
+.name-col { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list { flex: 1; overflow-y: auto; }
+
+.row {
+  display: flex;
+  padding: 3px 2px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.row:hover { background-color: #2d302f; }
+.row.active { background-color: #1e3a8a; color: #ffffff; }
+.tag-dir, .tag-img { color: #6b7280; }
+.item-link { color: #38bdf8; text-decoration: none; }
+.row.active .item-link { color: #ffffff; text-decoration: underline; }
+
+.download-btn {
+  color: #6b7280;
+  text-decoration: none;
+  margin-left: 10px;
+  padding: 0 4px;
+  font-size: 14px;
+}
+.download-btn:hover {
+  color: #38bdf8;
+}
+
+#divider {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background-color: #0f1010;
+  position: relative;
+}
+#divider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  right: 1px;
+  background-color: #353737;
+}
+#divider:hover::after,
+#divider.dragging::after {
+  background-color: #38bdf8;
+}
+
+/* Prevent text selection / the viewer eating mouse events while dragging */
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.resizing #viewer-container {
+  pointer-events: none;
+}
+
+#viewer-container {
+  flex: 1;
+  height: 100%;
+  background-color: #606060;
+  min-width: 100px;
+}
