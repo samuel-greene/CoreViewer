@@ -23,12 +23,27 @@
   <div id="viewer-container">
     <div id="draw-toolbar">
       <button id="btn-draw" class="toolbar-btn">Laser Pointer</button>
+      <button id="btn-select" class="toolbar-btn">Box Select</button>
+      <div id="download-selection-wrap" class="split-btn-wrap" style="display: none;">
+        <button id="btn-download-selection" class="toolbar-btn split-btn-main">Download Selection (JPG)</button>
+        <button id="btn-download-format-toggle" class="toolbar-btn split-btn-caret" title="Choose download format" aria-haspopup="true" aria-expanded="false">▾</button>
+        <div id="download-format-menu" class="format-menu" hidden>
+          <button type="button" class="format-option" data-format="jpg">JPEG (.jpg)</button>
+          <button type="button" class="format-option" data-format="tiff">TIFF (.tiff)</button>
+        </div>
+      </div>
       <button id="btn-clear" class="toolbar-btn">Clear</button>
     </div>
   </div>
 
   <script>
     let viewer = null;
+    let currentScanId = null;
+    let activeTool = 'none'; // 'laser', 'select', 'none'
+    let strokes = [];
+    let selectionBox = null; // { x, y, w, h } in full-image pixels
+    let selectionStart = null;
+    let drawCanvas, drawCtx;
 
     const SIDEBAR_MIN_PX = 160;
     const SIDEBAR_MAX_RATIO = 0.7; // never let the sidebar eat more than 70% of the window
@@ -119,7 +134,7 @@
           document.querySelectorAll(".row").forEach(r => r.classList.remove("active"));
           row.classList.add("active");
           openImage(file.id);
-        }, downloadUrl);
+        }, downloadUrl, file.size);
         listEl.appendChild(row);
       });
 
@@ -128,7 +143,16 @@
       filterRows();
     }
 
-    function createRow(typeTag, name, onClick, downloadUrl = null, options = {}) {
+    function formatFileSize(bytes) {
+      if (bytes === 0) return "0 B";
+
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      const i = Math.floor(Math.log(bytes) / Math.log(1024));
+
+      return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    function createRow(typeTag, name, onClick, downloadUrl = null, size = null, options = {}) {
       const row = document.createElement("div");
       row.className = "row";
       if (options.isParentNav) {
@@ -147,11 +171,19 @@
       row.appendChild(typeSpan);
       row.appendChild(nameSpan);
 
+      // Append file size
+      if (size !== null && size !== undefined) {
+        const sizeSpan = document.createElement("span");
+        sizeSpan.className = "size-col";
+        sizeSpan.textContent = formatFileSize(size);
+        sizeSpan.title = `${size.toLocaleString()} bytes`;
+        row.appendChild(sizeSpan);
+      }
       // Append download button if URL is provided
       if (downloadUrl) {
         const dlBtn = document.createElement("a");
         dlBtn.className = "download-btn";
-        dlBtn.innerHTML = "[FILE]"; // Unicode download icon
+        dlBtn.innerHTML = "[DOWNLOAD]"; // Unicode download icon
         dlBtn.href = downloadUrl;
         dlBtn.download = name;
         dlBtn.title = "Download " + name;
@@ -164,6 +196,7 @@
     }
 
     async function openImage(scanId) {
+      currentScanId = scanId;
       const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info`);
       if (!infoRes.ok) return;
       const info = await infoRes.json();
@@ -203,91 +236,220 @@
     }
 
     let isDrawMode = false;
-    let strokes = []; // Stores our laser pointer markings
-    let drawCanvas, drawCtx;
 
     function initDrawTool() {
-      // 1. Mount overlay to outer container, NOT internal viewer.canvas
       const container = document.getElementById('viewer-container');
-      
       drawCanvas = document.createElement('canvas');
       drawCanvas.style.position = 'absolute';
       drawCanvas.style.top = '0';
       drawCanvas.style.left = '0';
       drawCanvas.style.width = '100%';
       drawCanvas.style.height = '100%';
-      drawCanvas.style.pointerEvents = 'none'; // Click-through to OSD on startup
-      drawCanvas.style.zIndex = '10';          // Sit directly over OSD layers
-      
+      drawCanvas.style.pointerEvents = 'none';
+      drawCanvas.style.zIndex = '10';
+
       container.appendChild(drawCanvas);
       drawCtx = drawCanvas.getContext('2d');
 
-      // 2. Setup Toolbar Interactions
       const btnDraw = document.getElementById('btn-draw');
+      const btnSelect = document.getElementById('btn-select');
       const btnClear = document.getElementById('btn-clear');
 
-      btnDraw.onclick = () => {
-        isDrawMode = !isDrawMode;
-        btnDraw.classList.toggle('active', isDrawMode);
+      const downloadWrap = document.getElementById('download-selection-wrap');
+      const btnDownloadSel = document.getElementById('btn-download-selection');
+      const btnFormatToggle = document.getElementById('btn-download-format-toggle');
+      const formatMenu = document.getElementById('download-format-menu');
 
-        // Toggle click-through and OSD mouse navigation
-        drawCanvas.style.pointerEvents = isDrawMode ? 'auto' : 'none';
-        viewer.setMouseNavEnabled(!isDrawMode);
+      const DOWNLOAD_FORMAT_KEY = 'ome-viewer-download-format';
+      let downloadFormat = localStorage.getItem(DOWNLOAD_FORMAT_KEY) || 'jpg';
 
-        if (!isDrawMode) {
-          isMouseDown = false;
-          currentStroke = null;
+      function setDownloadFormat(format) {
+        downloadFormat = format;
+        localStorage.setItem(DOWNLOAD_FORMAT_KEY, format);
+        btnDownloadSel.textContent = `Download Selection (${format.toUpperCase()})`;
+        formatMenu.querySelectorAll('.format-option').forEach(opt => {
+          opt.classList.toggle('selected', opt.dataset.format === format);
+        });
+      }
+      setDownloadFormat(downloadFormat);
+
+      function closeFormatMenu() {
+        formatMenu.hidden = true;
+        btnFormatToggle.setAttribute('aria-expanded', 'false');
+      }
+
+      btnFormatToggle.onclick = (e) => {
+        e.stopPropagation();
+        const willOpen = formatMenu.hidden;
+        formatMenu.hidden = !willOpen;
+        btnFormatToggle.setAttribute('aria-expanded', String(willOpen));
+      };
+
+      formatMenu.querySelectorAll('.format-option').forEach(opt => {
+        opt.onclick = (e) => {
+          e.stopPropagation();
+          setDownloadFormat(opt.dataset.format);
+          closeFormatMenu();
+        };
+      });
+
+      document.addEventListener('click', (e) => {
+        if (!downloadWrap.contains(e.target)) closeFormatMenu();
+      });
+
+      function setTool(tool) {
+        activeTool = activeTool === tool ? 'none' : tool;
+
+        btnDraw.classList.toggle('active', activeTool === 'laser');
+        btnSelect.classList.toggle('active', activeTool === 'select');
+
+        const isActive = activeTool !== 'none';
+        drawCanvas.style.pointerEvents = isActive ? 'auto' : 'none';
+        // Note: we deliberately do NOT call viewer.setMouseNavEnabled() here.
+        // The draw canvas sitting on top already intercepts mousedown/drag
+        // when a tool is active, which is what stops OpenSeadragon from
+        // panning. Scroll-to-zoom is forwarded manually below (see the
+        // 'wheel' listener) so zooming keeps working while a tool is active.
+
+        isMouseDown = false;
+        currentStroke = null;
+        selectionStart = null;
+      }
+
+      btnDraw.onclick = () => setTool('laser');
+      btnSelect.onclick = () => setTool('select');
+
+      btnDownloadSel.onclick = async () => {
+        if (!selectionBox || !currentScanId) {
+          alert("No active selection or image loaded.");
+          return;
+        }
+
+        const x = Math.round(selectionBox.x);
+        const y = Math.round(selectionBox.y);
+        const w = Math.round(selectionBox.w);
+        const h = Math.round(selectionBox.h);
+
+        const format = downloadFormat;
+        const downloadUrl = `/api/scans/${encodeURIComponent(currentScanId)}/crop?x=${x}&y=${y}&w=${w}&h=${h}&format=${encodeURIComponent(format)}`;
+
+        try {
+          const response = await fetch(downloadUrl);
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({ detail: response.statusText }));
+            alert(`Download failed (${response.status}): ${errData.detail || 'Server error'}`);
+            return;
+          }
+
+          const blob = await response.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const cleanName = currentScanId.split('/').pop().replace(/\.[^/.]+$/, "");
+          const extension = format === 'tiff' ? 'tiff' : format;
+          const filename = `${cleanName}_crop_${x}_${y}_${w}_${h}.${extension}`;
+
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(blobUrl);
+        } catch (err) {
+          alert(`Download error: ${err.message}`);
         }
       };
 
       btnClear.onclick = () => {
         strokes = [];
+        selectionBox = null;
+        selectionStart = null;
+        downloadWrap.style.display = 'none';
+        closeFormatMenu();
         redraw();
       };
 
-      // 3. Track drawing with isolated native mouse events
       let isMouseDown = false;
       let currentStroke = null;
 
       drawCanvas.addEventListener('mousedown', (e) => {
-        if (!isDrawMode) return;
+        if (activeTool === 'none') return;
         isMouseDown = true;
 
         const rect = drawCanvas.getBoundingClientRect();
         const pixelPos = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
-        
         const viewportPos = viewer.viewport.pointFromPixel(pixelPos);
         const imagePos = viewer.viewport.viewportToImageCoordinates(viewportPos);
-        
-        currentStroke = [imagePos];
-        strokes.push(currentStroke);
+
+        if (activeTool === 'laser') {
+          currentStroke = [imagePos];
+          strokes.push(currentStroke);
+        } else if (activeTool === 'select') {
+          selectionStart = imagePos;
+          selectionBox = { x: imagePos.x, y: imagePos.y, w: 0, h: 0 };
+          downloadWrap.style.display = 'none';
+          closeFormatMenu();
+        }
         redraw();
       });
 
       drawCanvas.addEventListener('mousemove', (e) => {
-        if (!isDrawMode || !isMouseDown || !currentStroke) return;
+        if (activeTool === 'none' || !isMouseDown) return;
 
         const rect = drawCanvas.getBoundingClientRect();
         const pixelPos = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
-
         const viewportPos = viewer.viewport.pointFromPixel(pixelPos);
         const imagePos = viewer.viewport.viewportToImageCoordinates(viewportPos);
 
-        currentStroke.push(imagePos);
+        if (activeTool === 'laser' && currentStroke) {
+          currentStroke.push(imagePos);
+        } else if (activeTool === 'select' && selectionStart) {
+          const x = Math.min(selectionStart.x, imagePos.x);
+          const y = Math.min(selectionStart.y, imagePos.y);
+          const w = Math.abs(imagePos.x - selectionStart.x);
+          const h = Math.abs(imagePos.y - selectionStart.y);
+          selectionBox = { x, y, w, h };
+        }
         redraw();
       });
 
       window.addEventListener('mouseup', () => {
         if (isMouseDown) {
           isMouseDown = false;
+          if (activeTool === 'select' && selectionBox) {
+            if (selectionBox.w > 10 && selectionBox.h > 10) {
+              downloadWrap.style.display = 'inline-flex';
+            } else {
+              selectionBox = null;
+              downloadWrap.style.display = 'none';
+            }
+          }
           currentStroke = null;
+          redraw();
         }
       });
 
-      // 4. Force redraw on pan, zoom, or resize
+      // While a draw tool is active, the overlay canvas sits above
+      // OpenSeadragon and captures every mouse event -- including wheel --
+      // so scroll-to-zoom would otherwise stop working entirely. Forward
+      // wheel events to the viewport manually, matching OSD's own
+      // scroll-zoom feel, so you can still zoom in/out while drawing.
+      drawCanvas.addEventListener('wheel', (e) => {
+        if (activeTool === 'none') return;
+        e.preventDefault();
+
+        const rect = drawCanvas.getBoundingClientRect();
+        const pixelPos = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
+        const zoomPoint = viewer.viewport.pointFromPixel(pixelPos);
+
+        const zoomPerScroll = 1.2;
+        const factor = e.deltaY < 0 ? zoomPerScroll : 1 / zoomPerScroll;
+
+        viewer.viewport.zoomBy(factor, zoomPoint);
+        viewer.viewport.applyConstraints();
+      }, { passive: false });
+
       viewer.addHandler('update-viewport', redraw);
       viewer.addHandler('resize', resizeCanvas);
-
       setTimeout(resizeCanvas, 100);
     }
 
@@ -300,29 +462,54 @@
 
     function redraw() {
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      if (strokes.length === 0) return;
 
-      drawCtx.strokeStyle = '#ef4444'; // Laser red
-      drawCtx.lineWidth = 4;
-      drawCtx.lineCap = 'round';
-      drawCtx.lineJoin = 'round';
+      // Render Laser Strokes
+      if (strokes.length > 0) {
+        drawCtx.strokeStyle = '#ef4444';
+        drawCtx.lineWidth = 4;
+        drawCtx.lineCap = 'round';
+        drawCtx.lineJoin = 'round';
+        drawCtx.setLineDash([]);
 
-      strokes.forEach(stroke => {
-        if (stroke.length < 2) return;
-        drawCtx.beginPath();
-        
-        // Translate image coordinates back to screen pixels for HTML5 Canvas
-        const firstVp = viewer.viewport.imageToViewportCoordinates(stroke[0]);
-        const firstPx = viewer.viewport.pixelFromPoint(firstVp);
-        drawCtx.moveTo(firstPx.x, firstPx.y);
+        strokes.forEach(stroke => {
+          if (stroke.length < 2) return;
+          drawCtx.beginPath();
+          const firstPx = viewer.viewport.pixelFromPoint(viewer.viewport.imageToViewportCoordinates(stroke[0]));
+          drawCtx.moveTo(firstPx.x, firstPx.y);
 
-        for (let i = 1; i < stroke.length; i++) {
-          const vp = viewer.viewport.imageToViewportCoordinates(stroke[i]);
-          const px = viewer.viewport.pixelFromPoint(vp);
-          drawCtx.lineTo(px.x, px.y);
-        }
-        drawCtx.stroke();
-      });
+          for (let i = 1; i < stroke.length; i++) {
+            const px = viewer.viewport.pixelFromPoint(viewer.viewport.imageToViewportCoordinates(stroke[i]));
+            drawCtx.lineTo(px.x, px.y);
+          }
+          drawCtx.stroke();
+        });
+      }
+
+      // Render Selection Box
+      if (selectionBox) {
+        const topLeftPx = viewer.viewport.pixelFromPoint(
+          viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(selectionBox.x, selectionBox.y))
+        );
+        const bottomRightPx = viewer.viewport.pixelFromPoint(
+          viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(selectionBox.x + selectionBox.w, selectionBox.y + selectionBox.h))
+        );
+
+        const boxX = topLeftPx.x;
+        const boxY = topLeftPx.y;
+        const boxW = bottomRightPx.x - topLeftPx.x;
+        const boxH = bottomRightPx.y - topLeftPx.y;
+
+        // Region Highlight Overlay
+        drawCtx.fillStyle = 'rgba(56, 189, 248, 0.2)';
+        drawCtx.fillRect(boxX, boxY, boxW, boxH);
+
+        // Dashed Selection Rectangle
+        drawCtx.strokeStyle = '#38bdf8';
+        drawCtx.lineWidth = 2;
+        drawCtx.setLineDash([6, 6]);
+        drawCtx.strokeRect(boxX, boxY, boxW, boxH);
+        drawCtx.setLineDash([]);
+      }
     }
 
     window.onload = () => {

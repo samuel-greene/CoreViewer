@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from tile_service import (
     InvalidTileRequest,
     ScanReadError,
+    crop_scan_region,
     get_scan_info,
     get_tile,
 )
@@ -95,7 +96,11 @@ def list_scans(prefix: str = "") -> dict[str, object]:
                 if item_path.is_dir():
                     directories.append({"name": item_name, "path": f"{prefix}{item_name}/"})
                 elif item_path.is_file() and item_name.lower().endswith((".tif", ".tiff")):
-                    files.append({"id": f"{prefix}{item_name}", "name": item_name})
+                    files.append({
+                        "id": f"{prefix}{item_name}",
+                        "name": item_name,
+                        "size": item_path.stat().st_size,
+                    })
     except Exception as e:
         logger.error("Failed to list files in mount: %s", e)
         raise HTTPException(status_code=500, detail="Could not retrieve scans from storage")
@@ -155,4 +160,44 @@ def download_scan(scan_id: str) -> FileResponse:
         media_type="image/tiff"
     )
 
+@app.get("/api/scans/{scan_id:path}/crop")
+def download_crop(
+    scan_id: str,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    format: str = "jpg",
+) -> Response:
+    local_path = get_local_scan_path(scan_id)
+    try:
+        cropped_bytes = crop_scan_region(str(local_path), x, y, w, h, format)
+
+        fmt_normalized = format.lower().lstrip(".")
+        media_types = {
+            "png": "image/png",
+            "tif": "image/tiff",
+            "tiff": "image/tiff",
+        }
+        media_type = media_types.get(fmt_normalized, "image/jpeg")
+        extension = "tiff" if fmt_normalized in ("tif", "tiff") else fmt_normalized
+
+        filename = f"{local_path.stem}_crop_{x}_{y}_{w}_{h}.{extension}"
+        return Response(
+            content=cropped_bytes,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            },
+        )
+    except ScanReadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to crop region for %s", scan_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# IMPORTANT: this mount must be the LAST route registered. Starlette matches
+# routes in registration order, and a mount at "/" will swallow every path
+# beneath it (including /api/... routes) if it's added before they are.
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

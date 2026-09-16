@@ -243,3 +243,36 @@ def get_tile(file_path: str, osd_level: int, tile_x: int, tile_y: int) -> bytes:
             tile_y,
         )
         raise ScanReadError(f"libvips could not create this tile: {exc}") from exc
+
+def crop_scan_region(
+    file_path: str, x: int, y: int, width: int, height: int, fmt: str = "jpg"
+) -> bytes:
+    try:
+        pyramid = discover_pyramid(file_path)
+        base = pyramid.levels[0]
+
+        # Clamp region coordinates within image bounds
+        x_val = max(0, min(int(x), pyramid.width - 1))
+        y_val = max(0, min(int(y), pyramid.height - 1))
+        w_val = max(1, min(int(width), pyramid.width - x_val))
+        h_val = max(1, min(int(height), pyramid.height - y_val))
+
+        image = _load_level(file_path, base)
+        region = image.crop(x_val, y_val, w_val, h_val)
+
+        fmt_normalized = fmt.lower().lstrip(".")
+
+        if fmt_normalized in ("tif", "tiff"):
+            # Keep the region at its native bit depth/band count instead of
+            # flattening to 8-bit RGB -- TIFF can hold the original data,
+            # which is the whole point of offering it as an export option.
+            return region.write_to_buffer(".tif", compression="deflate", tile=True)
+
+        # JPEG/PNG can't represent every source format (alpha, >8bit, etc.),
+        # so those still go through the flatten/8-bit prep step.
+        prepared = _jpeg_ready(region)
+        if fmt_normalized == "png":
+            return prepared.write_to_buffer(".png")
+        return prepared.write_to_buffer(".jpg", Q=JPEG_QUALITY)
+    except pyvips.Error as exc:
+        raise ScanReadError(f"libvips failed to crop region: {exc}") from exc
