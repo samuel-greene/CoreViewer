@@ -87,4 +87,3 @@ async function loadScans() {
 scanSelect.addEventListener("change", () => openScan(scanSelect.value));
 viewer.addHandler("open-failed", (event) => setStatus(event.message || "Image tiles could not be opened", true));
 loadScans();
-

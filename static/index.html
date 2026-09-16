@@ -236,6 +236,22 @@
     }
 
     let isDrawMode = false;
+    const LASER_SCREEN_WIDTH = 4; // must match the on-screen lineWidth used in redraw()
+
+    // Laser strokes are recorded in full-image pixel coordinates, but their
+    // on-screen thickness depends on the current zoom level. To reproduce a
+    // similar-looking mark in an exported crop (which is at native
+    // resolution), we capture how many image pixels one screen pixel
+    // currently covers, and bake that into the stroke's width up front.
+    function imagePixelsPerScreenPixel() {
+      const centerViewport = viewer.viewport.getCenter(true);
+      const p1 = viewer.viewport.viewportToImageCoordinates(centerViewport);
+      const screenPoint = viewer.viewport.pixelFromPoint(centerViewport, true);
+      const p2 = viewer.viewport.viewportToImageCoordinates(
+        viewer.viewport.pointFromPixel(screenPoint.plus(new OpenSeadragon.Point(1, 0)), true)
+      );
+      return Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+    }
 
     function initDrawTool() {
       const container = document.getElementById('viewer-container');
@@ -331,10 +347,28 @@
         const h = Math.round(selectionBox.h);
 
         const format = downloadFormat;
-        const downloadUrl = `/api/scans/${encodeURIComponent(currentScanId)}/crop?x=${x}&y=${y}&w=${w}&h=${h}&format=${encodeURIComponent(format)}`;
+        const downloadUrl = `/api/scans/${encodeURIComponent(currentScanId)}/crop`;
+
+        // Only bring along strokes that actually land in (or near) the
+        // selected region -- markings entirely outside it wouldn't render
+        // in the crop anyway.
+        const margin = 50;
+        const markings = strokes
+          .filter(stroke => stroke.points.some(p =>
+            p.x >= x - margin && p.x <= x + w + margin &&
+            p.y >= y - margin && p.y <= y + h + margin
+          ))
+          .map(stroke => ({
+            points: stroke.points.map(p => [p.x, p.y]),
+            width: stroke.widthImage,
+          }));
 
         try {
-          const response = await fetch(downloadUrl);
+          const response = await fetch(downloadUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ x, y, w, h, format, markings }),
+          });
           if (!response.ok) {
             const errData = await response.json().catch(() => ({ detail: response.statusText }));
             alert(`Download failed (${response.status}): ${errData.detail || 'Server error'}`);
@@ -381,7 +415,10 @@
         const imagePos = viewer.viewport.viewportToImageCoordinates(viewportPos);
 
         if (activeTool === 'laser') {
-          currentStroke = [imagePos];
+          currentStroke = {
+            points: [imagePos],
+            widthImage: LASER_SCREEN_WIDTH * imagePixelsPerScreenPixel(),
+          };
           strokes.push(currentStroke);
         } else if (activeTool === 'select') {
           selectionStart = imagePos;
@@ -401,7 +438,7 @@
         const imagePos = viewer.viewport.viewportToImageCoordinates(viewportPos);
 
         if (activeTool === 'laser' && currentStroke) {
-          currentStroke.push(imagePos);
+          currentStroke.points.push(imagePos);
         } else if (activeTool === 'select' && selectionStart) {
           const x = Math.min(selectionStart.x, imagePos.x);
           const y = Math.min(selectionStart.y, imagePos.y);
@@ -466,19 +503,20 @@
       // Render Laser Strokes
       if (strokes.length > 0) {
         drawCtx.strokeStyle = '#ef4444';
-        drawCtx.lineWidth = 4;
+        drawCtx.lineWidth = LASER_SCREEN_WIDTH;
         drawCtx.lineCap = 'round';
         drawCtx.lineJoin = 'round';
         drawCtx.setLineDash([]);
 
         strokes.forEach(stroke => {
-          if (stroke.length < 2) return;
+          const points = stroke.points;
+          if (points.length < 2) return;
           drawCtx.beginPath();
-          const firstPx = viewer.viewport.pixelFromPoint(viewer.viewport.imageToViewportCoordinates(stroke[0]));
+          const firstPx = viewer.viewport.pixelFromPoint(viewer.viewport.imageToViewportCoordinates(points[0]));
           drawCtx.moveTo(firstPx.x, firstPx.y);
 
-          for (let i = 1; i < stroke.length; i++) {
-            const px = viewer.viewport.pixelFromPoint(viewer.viewport.imageToViewportCoordinates(stroke[i]));
+          for (let i = 1; i < points.length; i++) {
+            const px = viewer.viewport.pixelFromPoint(viewer.viewport.imageToViewportCoordinates(points[i]));
             drawCtx.lineTo(px.x, px.y);
           }
           drawCtx.stroke();

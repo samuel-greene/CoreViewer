@@ -244,8 +244,136 @@ def get_tile(file_path: str, osd_level: int, tile_x: int, tile_y: int) -> bytes:
         )
         raise ScanReadError(f"libvips could not create this tile: {exc}") from exc
 
+MARKING_SVG_COLOR = "rgb(239,68,68)"  # tailwind red-500, matches the viewer's on-screen laser color
+
+
+def _default_marking_width(region: pyvips.Image) -> float:
+    """A visible stroke width that scales with the exported region size,
+    for strokes that didn't come with an explicit width."""
+    return max(2, round(max(region.width, region.height) / 400))
+
+
+def _ensure_rgb_capable(region: pyvips.Image) -> pyvips.Image:
+    """Promotes a region with fewer than 3 bands to RGB (or RGBA) so a red
+    marking can actually be represented as red rather than as a plain
+    brightness value. Regions that already carry color (bands >= 3) are
+    returned unchanged.
+
+    This only runs when the crop actually has a marking on it -- an
+    unmarked grayscale/native crop is untouched and keeps its original
+    band count and bit depth.
+    """
+    if region.bands >= 3:
+        return region
+    if region.bands == 1:
+        return region.bandjoin([region, region])
+    # bands == 2: treat as grayscale + alpha, replicate the gray channel
+    # into RGB and keep the alpha channel on top.
+    gray = region[0]
+    alpha = region[1]
+    return gray.bandjoin([gray, gray, alpha])
+
+
+def _marking_max_value(region: pyvips.Image) -> float:
+    if region.format in ("ushort", "short"):
+        return 65535
+    if region.format in ("float", "double"):
+        return 1.0
+    return 255
+
+
+def _svg_stroke_elements(markings: list[dict], default_width: float) -> list[str]:
+    """Builds one SVG shape per stroke: a filled dot for a plain click, or a
+    round-capped/joined polyline for a drag, matching the on-screen look."""
+    elements = []
+    for stroke in markings:
+        points = stroke.get("points") or []
+        if not points:
+            continue
+        width = stroke.get("width") or default_width
+        if len(points) == 1:
+            x, y = points[0]
+            elements.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{width / 2:.2f}" fill="{MARKING_SVG_COLOR}"/>')
+        else:
+            points_attr = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+            elements.append(
+                f'<polyline points="{points_attr}" fill="none" stroke="{MARKING_SVG_COLOR}" '
+                f'stroke-width="{width:.2f}" stroke-linecap="round" stroke-linejoin="round"/>'
+            )
+    return elements
+
+
+def _draw_markings(
+    region: pyvips.Image, markings: list[dict], origin_x: int, origin_y: int
+) -> pyvips.Image:
+    """Burns laser-pointer strokes into an already-cropped region.
+
+    `markings` points are in full-scan pixel coordinates (matching the
+    coordinate space the viewer records them in); `origin_x`/`origin_y` are
+    the crop's top-left corner in that same space, used to translate each
+    point into region-local coordinates.
+
+    The strokes are rendered once as SVG (round-capped/joined, so this
+    matches the on-screen canvas look) and rasterized with librsvg into a
+    same-size RGBA mask, then alpha-blended onto the region in a single
+    pass. This is one rasterize + one blend regardless of how many points
+    or strokes there are -- much faster than stamping individual shapes
+    onto a full-size image copy point by point, which got very slow on
+    large crops with long, detailed strokes.
+
+    The mask is always rendered as plain 8-bit RGBA (that's what librsvg
+    produces), so its color is scaled to the region's actual bit depth
+    before blending -- otherwise a 16-bit region would get compared/mixed
+    against 0-255 values and come out far too dim (or, worse, mismatched
+    band formats can make some blending ops silently corrupt untouched
+    pixels).
+    """
+    if not markings:
+        return region
+
+    default_width = _default_marking_width(region)
+    local_markings = [
+        {
+            "points": [(float(px) - origin_x, float(py) - origin_y) for px, py in (m.get("points") or [])],
+            "width": m.get("width"),
+        }
+        for m in markings
+    ]
+
+    elements = _svg_stroke_elements(local_markings, default_width)
+    if not elements:
+        return region
+
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{region.width}" height="{region.height}">' + "".join(
+        elements
+    ) + "</svg>"
+    mask = pyvips.Image.svgload_buffer(svg.encode("utf-8"))  # uchar RGBA, same size as region
+
+    color_bands = min(region.bands, 3)
+    max_value = _marking_max_value(region)
+    mask_rgb = (mask[0:color_bands]) * (max_value / 255.0)
+    mask_alpha = mask[3] / 255.0  # float, 0..1
+
+    base_rgb = region[0:color_bands]
+    blended = (mask_rgb * mask_alpha + base_rgb * (1 - mask_alpha)).cast(region.format)
+
+    if region.bands > color_bands:
+        # Extra bands (alpha, or additional fluorescence/data channels) are
+        # left untouched rather than forced on -- we don't know what they
+        # represent, so we shouldn't overwrite their values.
+        blended = blended.bandjoin(region[color_bands : region.bands])
+
+    return blended
+
+
 def crop_scan_region(
-    file_path: str, x: int, y: int, width: int, height: int, fmt: str = "jpg"
+    file_path: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    fmt: str = "jpg",
+    markings: list[dict] | None = None,
 ) -> bytes:
     try:
         pyramid = discover_pyramid(file_path)
@@ -259,6 +387,10 @@ def crop_scan_region(
 
         image = _load_level(file_path, base)
         region = image.crop(x_val, y_val, w_val, h_val)
+
+        if markings:
+            region = _ensure_rgb_capable(region)
+            region = _draw_markings(region, markings, x_val, y_val)
 
         fmt_normalized = fmt.lower().lstrip(".")
 

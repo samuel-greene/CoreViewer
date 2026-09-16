@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from tile_service import (
     InvalidTileRequest,
@@ -160,18 +161,31 @@ def download_scan(scan_id: str) -> FileResponse:
         media_type="image/tiff"
     )
 
-@app.get("/api/scans/{scan_id:path}/crop")
-def download_crop(
-    scan_id: str,
-    x: int,
-    y: int,
-    w: int,
-    h: int,
-    format: str = "jpg",
-) -> Response:
+class MarkingStroke(BaseModel):
+    # Points are in full-scan pixel coordinates, matching what the viewer
+    # records for laser-pointer strokes.
+    points: list[tuple[float, float]]
+    width: float | None = None
+
+
+class CropRequest(BaseModel):
+    x: int
+    y: int
+    w: int
+    h: int
+    format: str = "jpg"
+    markings: list[MarkingStroke] = []
+
+
+@app.post("/api/scans/{scan_id:path}/crop")
+def download_crop(scan_id: str, body: CropRequest) -> Response:
     local_path = get_local_scan_path(scan_id)
+    x, y, w, h, format = body.x, body.y, body.w, body.h, body.format
     try:
-        cropped_bytes = crop_scan_region(str(local_path), x, y, w, h, format)
+        markings = [
+            {"points": stroke.points, "width": stroke.width} for stroke in body.markings
+        ]
+        cropped_bytes = crop_scan_region(str(local_path), x, y, w, h, format, markings)
 
         fmt_normalized = format.lower().lstrip(".")
         media_types = {
