@@ -2,12 +2,41 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>OME-TIFF Directory Viewer</title>
+  <title>OME-TIFF Viewer</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
 </head>
 <body>
+
+  <!-- Sleek Dark Login Screen Overlay -->
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-card">
+      <h2 class="login-title">Sign In</h2>
+      <p class="login-subtitle">OME-TIFF Portal Access</p>
+      
+      <form id="login-form">
+        <div class="input-group">
+          <label for="login-email">Email</label>
+          <input type="email" id="login-email" required autocomplete="email" placeholder="" />
+        </div>
+        
+        <div class="input-group">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" required autocomplete="current-password" placeholder="••••••••" />
+        </div>
+
+        <div id="login-error" class="login-error" hidden></div>
+        
+        <button type="submit" id="login-submit-btn" class="login-btn">Log In</button>
+      </form>
+    </div>
+  </div>
+
   <div id="sidebar">
+    <div id="user-bar" class="user-bar">
+      <span id="user-email-display" class="user-email"></span>
+      <button id="btn-logout" class="logout-btn">Sign Out</button>
+    </div>
     <div id="path-header">Index of /</div>
     <div class="search-wrap">
       <input type="text" id="search-box" placeholder="Filter files and folders…" autocomplete="off" />
@@ -19,7 +48,9 @@
     <div id="file-list" class="file-list"></div>
     <div id="no-results" class="no-results" hidden>No matches in this folder</div>
   </div>
+  
   <div id="divider" title="Drag to resize"></div>
+  
   <div id="viewer-container">
     <div id="draw-toolbar">
       <button id="btn-draw" class="toolbar-btn">Laser Pointer</button>
@@ -39,21 +70,84 @@
   <script>
     let viewer = null;
     let currentScanId = null;
-    let activeTool = 'none'; // 'laser', 'select', 'none'
+    let activeTool = 'none';
     let strokes = [];
-    let selectionBox = null; // { x, y, w, h } in full-image pixels
+    let selectionBox = null;
     let selectionStart = null;
     let drawCanvas, drawCtx;
 
     const SIDEBAR_MIN_PX = 160;
-    const SIDEBAR_MAX_RATIO = 0.7; // never let the sidebar eat more than 70% of the window
+    const SIDEBAR_MAX_RATIO = 0.7;
     const SIDEBAR_WIDTH_KEY = "ome-viewer-sidebar-width";
+
+    // --- AUTHENTICATION CONTROLLER ---
+    async function checkAuth() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const user = await res.json();
+          document.getElementById("login-overlay").style.display = "none";
+          document.getElementById("user-email-display").textContent = user.email;
+          loadDirectory("");
+        } else {
+          showLoginModal();
+        }
+      } catch (err) {
+        showLoginModal();
+      }
+    }
+
+    function showLoginModal() {
+      document.getElementById("login-overlay").style.display = "flex";
+    }
+
+    document.getElementById("login-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("login-email").value;
+      const password = document.getElementById("login-password").value;
+      const errorEl = document.getElementById("login-error");
+      const submitBtn = document.getElementById("login-submit-btn");
+
+      errorEl.hidden = true;
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Authenticating...";
+
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password })
+        });
+
+        if (res.ok) {
+          const user = await res.json();
+          document.getElementById("login-overlay").style.display = "none";
+          document.getElementById("user-email-display").textContent = user.email;
+          document.getElementById("login-password").value = "";
+          loadDirectory("");
+        } else {
+          const errData = await res.json();
+          errorEl.textContent = errData.detail || "Authentication failed";
+          errorEl.hidden = false;
+        }
+      } catch (err) {
+        errorEl.textContent = "Server connection failed";
+        errorEl.hidden = false;
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Log In";
+      }
+    };
+
+    document.getElementById("btn-logout").onclick = async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      location.reload();
+    };
 
     function initResizer() {
       const sidebar = document.getElementById("sidebar");
       const divider = document.getElementById("divider");
 
-      // Restore a previously saved width, if any.
       const savedWidth = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY), 10);
       if (!Number.isNaN(savedWidth)) {
         applySidebarWidth(savedWidth);
@@ -95,12 +189,9 @@
         id: "viewer-container",
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
         showNavigationControl: true,
-        
-
-        // Performance optimizations
-        imageLoaderLimit: 10,       // Max parallel requests (default is 6)
-        blendingTime: 0,            // Instantly render tiles without cross-fade delays
-        animationTime: 0.3,         // Faster pan/zoom transition response
+        imageLoaderLimit: 10,
+        blendingTime: 0,
+        animationTime: 0.3,
         maxZoomPixelRatio: 2,
         timeout: 30000,
         backgroundColor: "#000000"
@@ -109,25 +200,26 @@
 
     async function loadDirectory(prefix = "") {
       const res = await fetch(`/api/scans?prefix=${encodeURIComponent(prefix)}`);
+      if (res.status === 401) {
+        showLoginModal();
+        return;
+      }
       const data = await res.json();
 
       document.getElementById("path-header").textContent = `Index of ${data.current_path}`;
       const listEl = document.getElementById("file-list");
       listEl.innerHTML = "";
 
-      // Parent Directory row
       if (data.parent_prefix !== null) {
         listEl.appendChild(
           createRow("[DIR]", "..", () => loadDirectory(data.parent_prefix), null, { isParentNav: true })
         );
       }
 
-      // Subdirectories
       data.directories.forEach(dir => {
         listEl.appendChild(createRow("[DIR]", dir.name, () => loadDirectory(dir.path)));
       });
 
-      // Scan files
       data.files.forEach(file => {
         const downloadUrl = `/api/scans/${encodeURIComponent(file.id)}/download`;
         const row = createRow("[IMG]", file.name, () => {
@@ -138,26 +230,20 @@
         listEl.appendChild(row);
       });
 
-      // Re-apply whatever's currently in the search box, so the filter
-      // persists as you navigate between folders.
       filterRows();
     }
 
     function formatFileSize(bytes) {
       if (bytes === 0) return "0 B";
-
       const units = ["B", "KB", "MB", "GB", "TB"];
       const i = Math.floor(Math.log(bytes) / Math.log(1024));
-
       return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
     }
 
     function createRow(typeTag, name, onClick, downloadUrl = null, size = null, options = {}) {
       const row = document.createElement("div");
       row.className = "row";
-      if (options.isParentNav) {
-        row.classList.add("parent-row");
-      }
+      if (options.isParentNav) row.classList.add("parent-row");
 
       const typeSpan = document.createElement("span");
       typeSpan.className = "type-col tag-dir";
@@ -166,12 +252,11 @@
       const nameSpan = document.createElement("span");
       nameSpan.className = "name-col item-link";
       nameSpan.textContent = name;
-      nameSpan.title = name; // Helpful for long names that truncate
+      nameSpan.title = name;
 
       row.appendChild(typeSpan);
       row.appendChild(nameSpan);
 
-      // Append file size
       if (size !== null && size !== undefined) {
         const sizeSpan = document.createElement("span");
         sizeSpan.className = "size-col";
@@ -179,15 +264,15 @@
         sizeSpan.title = `${size.toLocaleString()} bytes`;
         row.appendChild(sizeSpan);
       }
-      // Append download button if URL is provided
+      
       if (downloadUrl) {
         const dlBtn = document.createElement("a");
         dlBtn.className = "download-btn";
-        dlBtn.innerHTML = "[DOWNLOAD]"; // Unicode download icon
+        dlBtn.innerHTML = "[DOWNLOAD]";
         dlBtn.href = downloadUrl;
         dlBtn.download = name;
         dlBtn.title = "Download " + name;
-        dlBtn.onclick = (e) => e.stopPropagation(); // Prevents the row click event
+        dlBtn.onclick = (e) => e.stopPropagation();
         row.appendChild(dlBtn);
       }
 
@@ -220,8 +305,6 @@
       let visibleCount = 0;
 
       rows.forEach(row => {
-        // The ".." parent-navigation row always stays visible -- it's
-        // navigation, not a search result.
         if (row.classList.contains("parent-row")) {
           row.hidden = false;
           return;
@@ -235,14 +318,8 @@
       document.getElementById("no-results").hidden = !(query !== "" && visibleCount === 0);
     }
 
-    let isDrawMode = false;
-    const LASER_SCREEN_WIDTH = 4; // must match the on-screen lineWidth used in redraw()
+    const LASER_SCREEN_WIDTH = 4;
 
-    // Laser strokes are recorded in full-image pixel coordinates, but their
-    // on-screen thickness depends on the current zoom level. To reproduce a
-    // similar-looking mark in an exported crop (which is at native
-    // resolution), we capture how many image pixels one screen pixel
-    // currently covers, and bake that into the stroke's width up front.
     function imagePixelsPerScreenPixel() {
       const centerViewport = viewer.viewport.getCenter(true);
       const p1 = viewer.viewport.viewportToImageCoordinates(centerViewport);
@@ -315,17 +392,11 @@
 
       function setTool(tool) {
         activeTool = activeTool === tool ? 'none' : tool;
-
         btnDraw.classList.toggle('active', activeTool === 'laser');
         btnSelect.classList.toggle('active', activeTool === 'select');
 
         const isActive = activeTool !== 'none';
         drawCanvas.style.pointerEvents = isActive ? 'auto' : 'none';
-        // Note: we deliberately do NOT call viewer.setMouseNavEnabled() here.
-        // The draw canvas sitting on top already intercepts mousedown/drag
-        // when a tool is active, which is what stops OpenSeadragon from
-        // panning. Scroll-to-zoom is forwarded manually below (see the
-        // 'wheel' listener) so zooming keeps working while a tool is active.
 
         isMouseDown = false;
         currentStroke = null;
@@ -349,9 +420,6 @@
         const format = downloadFormat;
         const downloadUrl = `/api/scans/${encodeURIComponent(currentScanId)}/crop`;
 
-        // Only bring along strokes that actually land in (or near) the
-        // selected region -- markings entirely outside it wouldn't render
-        // in the crop anyway.
         const margin = 50;
         const markings = strokes
           .filter(stroke => stroke.points.some(p =>
@@ -465,11 +533,6 @@
         }
       });
 
-      // While a draw tool is active, the overlay canvas sits above
-      // OpenSeadragon and captures every mouse event -- including wheel --
-      // so scroll-to-zoom would otherwise stop working entirely. Forward
-      // wheel events to the viewport manually, matching OSD's own
-      // scroll-zoom feel, so you can still zoom in/out while drawing.
       drawCanvas.addEventListener('wheel', (e) => {
         if (activeTool === 'none') return;
         e.preventDefault();
@@ -500,7 +563,6 @@
     function redraw() {
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
 
-      // Render Laser Strokes
       if (strokes.length > 0) {
         drawCtx.strokeStyle = '#ef4444';
         drawCtx.lineWidth = LASER_SCREEN_WIDTH;
@@ -523,7 +585,6 @@
         });
       }
 
-      // Render Selection Box
       if (selectionBox) {
         const topLeftPx = viewer.viewport.pixelFromPoint(
           viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(selectionBox.x, selectionBox.y))
@@ -537,11 +598,9 @@
         const boxW = bottomRightPx.x - topLeftPx.x;
         const boxH = bottomRightPx.y - topLeftPx.y;
 
-        // Region Highlight Overlay
         drawCtx.fillStyle = 'rgba(56, 189, 248, 0.2)';
         drawCtx.fillRect(boxX, boxY, boxW, boxH);
 
-        // Dashed Selection Rectangle
         drawCtx.strokeStyle = '#38bdf8';
         drawCtx.lineWidth = 2;
         drawCtx.setLineDash([6, 6]);
@@ -555,7 +614,7 @@
       initDrawTool();
       initResizer();
       document.getElementById("search-box").addEventListener("input", filterRows);
-      loadDirectory("");
+      checkAuth();
     };
   </script>
 </body>

@@ -256,3 +256,138 @@ body.resizing #viewer-container {
   display: flex;
   align-items: center;
 }
+/* --- LOGIN OVERLAY & DARK MODAL --- */
+.login-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #000; /* Matched to body background */
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-card {
+  background-color: #1d1f20; /* Matched to sidebar background */
+  border: 1px solid #353737; /* Matched to UI borders */
+  border-radius: 4px;
+  padding: 30px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
+  font-family: inherit;
+}
+
+.login-title {
+  color: #c6d5db; /* Matched to #path-header */
+  font-size: 13px; /* Matched to global font size */
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.login-subtitle {
+  color: #6b7280;
+  font-size: 13px;
+  margin-bottom: 24px;
+  font-style: italic;
+}
+
+.input-group {
+  margin-bottom: 15px;
+  display: flex;
+  flex-direction: column;
+}
+
+.input-group label {
+  color: #6b7280; /* Matched to table headers */
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.input-group input {
+  background-color: #2d302f; /* Matched to search box */
+  border: 1px solid #4b4f4f;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: #e6edf3;
+  font-family: inherit; /* Inherits the monospace stack */
+  font-size: 13px;
+  transition: border-color 0.2s;
+}
+
+.input-group input::placeholder {
+  color: #6b7280;
+}
+
+.input-group input:focus {
+  outline: none;
+  border-color: #38bdf8;
+}
+
+.login-btn {
+  width: 100%;
+  padding: 6px 12px;
+  margin-top: 8px;
+  background-color: #2d302f;
+  border: 1px solid #4b4f4f;
+  border-radius: 4px;
+  color: #e6edf3;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.login-btn:hover {
+  background-color: #353737;
+  color: #38bdf8;
+  border-color: #38bdf8;
+}
+
+.login-error {
+  color: #ef4444;
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 6px 8px;
+  border: 1px solid #ef4444;
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+/* --- SIDEBAR USER PROFILE BAR --- */
+.user-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #353737;
+}
+
+.user-email {
+  color: #38bdf8; /* Matched to item-link */
+  font-size: 13px;
+  font-family: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-btn {
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.logout-btn:hover {
+  color: #ef4444;
+  text-decoration: underline;
+}
