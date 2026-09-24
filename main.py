@@ -123,6 +123,8 @@ def _load_users_from_env() -> dict:
         except Exception as exc:
             # Fail hard — a silently empty user store is worse than a crash.
             raise RuntimeError(f"USERS_JSON env var is malformed: {exc}") from exc
+    else:
+        logger.info("Did not find raw USERS_JSON")
 
     # Mode B fallback
     email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
