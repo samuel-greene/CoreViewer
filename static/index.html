@@ -52,6 +52,10 @@
   <div id="divider" title="Drag to resize"></div>
   
   <div id="viewer-container">
+    <div id="viewer-loading-overlay">
+      <div class="spinner"></div>
+      <span class="loading-label">Loading image…</span>
+    </div>
     <div id="metadata-panel"></div>
     <div id="draw-toolbar">
       <button id="btn-draw" class="toolbar-btn">Laser Pointer</button>
@@ -195,7 +199,7 @@
         animationTime: 0.3,
         maxZoomPixelRatio: 2,
         timeout: 30000,
-        backgroundColor: "#000000"
+        backgroundColor: "#111827"
       });
     }
 
@@ -207,7 +211,9 @@
       }
       const data = await res.json();
 
-      document.getElementById("path-header").textContent = `Index of ${data.current_path}`;
+      // --- Render interactive breadcrumbs ---
+      renderBreadcrumbs(data.current_path);
+
       const listEl = document.getElementById("file-list");
       listEl.innerHTML = "";
 
@@ -224,14 +230,70 @@
       data.files.forEach(file => {
         const downloadUrl = `/api/scans/${encodeURIComponent(file.id)}/download`;
         const row = createRow("[IMG]", file.name, () => {
-          document.querySelectorAll(".row").forEach(r => r.classList.remove("active"));
-          row.classList.add("active");
-          openImage(file.id);
+          // Immediately mark as loading so the user gets instant feedback
+          document.querySelectorAll(".row").forEach(r => r.classList.remove("active", "loading"));
+          row.classList.add("loading");
+          openImage(file.id, row);
         }, downloadUrl, file.size);
         listEl.appendChild(row);
       });
 
       filterRows();
+    }
+
+    /**
+     * Builds clickable breadcrumb navigation from the server's current_path string.
+     * e.g.  "/Patient_01/Scans" → [Home] / [Patient_01] / Scans
+     */
+    function renderBreadcrumbs(currentPath) {
+      const header = document.getElementById("path-header");
+      header.innerHTML = "";
+
+      const nav = document.createElement("nav");
+      nav.className = "breadcrumbs";
+      nav.setAttribute("aria-label", "File browser navigation");
+
+      // "Home" crumb always navigates to root
+      const homeSpan = document.createElement("span");
+      homeSpan.className = "breadcrumb-item";
+      homeSpan.textContent = "Home";
+      homeSpan.title = "Navigate to root";
+      homeSpan.onclick = () => loadDirectory("");
+      nav.appendChild(homeSpan);
+
+      // Decompose the path into segments
+      // currentPath looks like "/" or "/folder" or "/folder/sub"
+      const clean = currentPath.replace(/^\//, "").replace(/\/$/, "");
+      if (clean) {
+        const segments = clean.split("/");
+        segments.forEach((seg, idx) => {
+          const sep = document.createElement("span");
+          sep.className = "breadcrumb-sep";
+          sep.textContent = "/";
+          nav.appendChild(sep);
+
+          const isLast = idx === segments.length - 1;
+          if (isLast) {
+            // Current folder — non-clickable
+            const cur = document.createElement("span");
+            cur.className = "breadcrumb-current";
+            cur.textContent = seg;
+            cur.title = seg;
+            nav.appendChild(cur);
+          } else {
+            // Ancestor folder — clickable, navigates to that prefix
+            const prefix = segments.slice(0, idx + 1).join("/") + "/";
+            const crumb = document.createElement("span");
+            crumb.className = "breadcrumb-item";
+            crumb.textContent = seg;
+            crumb.title = `Navigate to ${seg}`;
+            crumb.onclick = () => loadDirectory(prefix);
+            nav.appendChild(crumb);
+          }
+        });
+      }
+
+      header.appendChild(nav);
     }
 
     function formatFileSize(bytes) {
@@ -281,29 +343,53 @@
       return row;
     }
 
-    async function openImage(scanId) {
+    async function openImage(scanId, clickedRow = null) {
       currentScanId = scanId;
-      const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info`);
-      if (!infoRes.ok) return;
-      const info = await infoRes.json();
 
-      // Display metadata on screen
-      const metaPanel = document.getElementById("metadata-panel");
-      if (metaPanel) {
-        metaPanel.textContent = info.metadata_summary || "";
-      }
+      // Show loading overlay immediately so the user knows the click registered
+      const overlay = document.getElementById("viewer-loading-overlay");
+      overlay.classList.add("visible");
 
-      const tileSource = {
-        height: info.height,
-        width: info.width,
-        tileSize: info.tile_size,
-        maxLevel: info.osd_max_level,
-        getTileUrl: function (level, x, y) {
-          return `/api/scans/${encodeURIComponent(scanId)}/tiles/${level}/${x}/${y}.jpg`;
+      try {
+        const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info`);
+        if (!infoRes.ok) {
+          overlay.classList.remove("visible");
+          if (clickedRow) clickedRow.classList.remove("loading");
+          return;
         }
-      };
+        const info = await infoRes.json();
 
-      viewer.open(tileSource);
+        // Update metadata panel content
+        const metaPanel = document.getElementById("metadata-panel");
+        if (metaPanel) {
+          metaPanel.textContent = info.metadata_summary || "";
+        }
+
+        const tileSource = {
+          height: info.height,
+          width: info.width,
+          tileSize: info.tile_size,
+          maxLevel: info.osd_max_level,
+          getTileUrl: function (level, x, y) {
+            return `/api/scans/${encodeURIComponent(scanId)}/tiles/${level}/${x}/${y}.jpg`;
+          }
+        };
+
+        // Hide overlay once the first frame is rendered, then mark row active
+        viewer.addOnceHandler("open", () => {
+          overlay.classList.remove("visible");
+          if (clickedRow) {
+            clickedRow.classList.remove("loading");
+            clickedRow.classList.add("active");
+          }
+        });
+
+        viewer.open(tileSource);
+      } catch (err) {
+        // On network error hide the overlay so the UI isn't stuck
+        overlay.classList.remove("visible");
+        if (clickedRow) clickedRow.classList.remove("loading");
+      }
     }
 
     function filterRows() {

@@ -2,3 +2,6 @@ __pycache__/
 .venv/
 scans/*.tif
 scans/*.tiff
+
+# Local dev secrets — never commit the real .env, only .env.example
+.env

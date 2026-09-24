@@ -1,13 +1,21 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ─── Base typography ──────────────────────────────────────────────────────── */
+/* System sans-serif for all UI chrome; monospace reserved for data/metadata   */
 body {
   display: flex;
   height: 100vh;
   width: 100vw;
-  background-color: #000;
+  /* Softened from pure black to reduce eye strain in dark lab environments */
+  background-color: #111827;
   color: #d1d5db;
-  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Courier New', monospace;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overflow: hidden;
+}
+
+/* Monospace reserved for data-dense elements only */
+.mono {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Courier New', monospace;
 }
 
 #sidebar {
@@ -22,11 +30,49 @@ body {
   flex-shrink: 0;
 }
 
+
+/* ─── Breadcrumb navigation ─────────────────────────────────────────────────── */
 #path-header {
+  padding-bottom: 8px;
+}
+
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.breadcrumb-item {
+  color: #38bdf8;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 1px 2px;
+  border-radius: 3px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.breadcrumb-item:hover {
+  background: #1e3a5f;
+  color: #7dd3fc;
+}
+
+.breadcrumb-sep {
+  color: #4b5563;
+  user-select: none;
+  font-size: 11px;
+}
+
+.breadcrumb-current {
   color: #c6d5db;
-  padding-bottom: 10px;
-  word-break: break-all;
-  font-weight: bold;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 .search-wrap {
@@ -36,9 +82,9 @@ body {
 #search-box {
   width: 100%;
   padding: 6px 8px;
-  background-color: #2d302f;
-  border: 1px solid #4b4f4f;
-  border-radius: 4px;
+  background-color: #1e2333;
+  border: 1px solid #374151;
+  border-radius: 6px;
   color: #e6edf3;
   font-family: inherit;
   font-size: 13px;
@@ -49,6 +95,7 @@ body {
 #search-box:focus {
   outline: none;
   border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
 }
 
 .no-results {
@@ -57,31 +104,55 @@ body {
   font-style: italic;
 }
 
+/* Sticky header stays visible when scrolling through long file lists */
 .table-header {
   display: flex;
   color: #6b7280;
   border-bottom: 1px solid #353737;
   padding-bottom: 4px;
   margin-bottom: 6px;
+  position: sticky;
+  top: 0;
+  background-color: #1d1f20; /* match sidebar so content scrolls under it */
+  z-index: 1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
-.type-col { width: 55px; flex-shrink: 0; }
+.type-col { width: 40px; flex-shrink: 0; display: flex; align-items: center; }
 .name-col { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* file-list is the scroll container; table-header is sticky inside .sidebar */
 .file-list { flex: 1; overflow-y: auto; }
 
 .row {
   display: flex;
-  padding: 3px 2px;
+  align-items: center;
+  padding: 4px 4px;
+  border-radius: 4px;
   cursor: pointer;
   user-select: none;
+  transition: background 0.12s;
 }
 
-.row:hover { background-color: #2d302f; }
+.row:hover { background-color: #1e2333; }
+/* Active row: persists immediately when clicked so user sees feedback during load */
 .row.active { background-color: #1e3a8a; color: #ffffff; }
+/* Loading pulse so the user knows the row click registered during heavy I/O */
+.row.loading {
+  background-color: #1e3060;
+  animation: rowPulse 1.2s ease-in-out infinite;
+}
+@keyframes rowPulse {
+  0%, 100% { background-color: #1e3060; }
+  50%       { background-color: #1e3a8a; }
+}
 .row[hidden] { display: none; }
 .tag-dir, .tag-img { color: #6b7280; }
 .item-link { color: #38bdf8; text-decoration: none; }
-.row.active .item-link { color: #ffffff; text-decoration: underline; }
+.row.active .item-link { color: #ffffff; }
+.row.loading .item-link { color: #93c5fd; }
 
 .download-btn {
   color: #6b7280;
@@ -243,19 +314,17 @@ body.resizing #viewer-container {
   font-weight: bold;
 }
 
+/* Monospace + right-align for file size numerals so digits line up */
 .size-col {
-  width: 80px;
+  width: 72px;
   flex-shrink: 0;
   text-align: right;
-  margin-right: 0px;
   color: #6b7280;
-  font-size: 1.0em;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Courier New', monospace;
+  font-size: 11px;
 }
 
-.row {
-  display: flex;
-  align-items: center;
-}
+/* NOTE: the full .row rule is defined earlier in the file; this duplicate is removed */
 /* --- LOGIN OVERLAY & DARK MODAL --- */
 .login-overlay {
   position: fixed;
@@ -263,7 +332,8 @@ body.resizing #viewer-container {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background-color: #000; /* Matched to body background */
+  /* Matches the new softened body background */
+  background-color: #111827;
   z-index: 9999;
   display: flex;
   align-items: center;
@@ -271,28 +341,32 @@ body.resizing #viewer-container {
 }
 
 .login-card {
-  background-color: #1d1f20; /* Matched to sidebar background */
-  border: 1px solid #353737; /* Matched to UI borders */
-  border-radius: 4px;
-  padding: 30px;
+  background-color: #1d1f20;
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 36px 32px;
   width: 100%;
   max-width: 380px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
+  /* Layered drop shadow creates depth against the flat background */
+  box-shadow:
+    0 4px 6px rgba(0, 0, 0, 0.4),
+    0 12px 24px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
   font-family: inherit;
 }
 
 .login-title {
-  color: #c6d5db; /* Matched to #path-header */
-  font-size: 13px; /* Matched to global font size */
-  font-weight: bold;
-  margin-bottom: 6px;
+  color: #e5e7eb;
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  letter-spacing: -0.02em;
 }
 
 .login-subtitle {
   color: #6b7280;
   font-size: 13px;
   margin-bottom: 24px;
-  font-style: italic;
 }
 
 .input-group {
@@ -313,7 +387,7 @@ body.resizing #viewer-container {
   border-radius: 4px;
   padding: 6px 8px;
   color: #e6edf3;
-  font-family: inherit; /* Inherits the monospace stack */
+  font-family: inherit; /* Inherits system sans-serif from body */
   font-size: 13px;
   transition: border-color 0.2s;
 }
@@ -392,14 +466,76 @@ body.resizing #viewer-container {
   text-decoration: underline;
 }
 
+/* ─── Metadata panel — frosted glass ────────────────────────────────────────── */
+/* backdrop-filter ensures the text stays legible over bright or saturated tiles */
 #metadata-panel {
   position: absolute;
   bottom: 15px;
   left: 15px;
   z-index: 100;
-  color: rgba(156, 163, 175, 0.7); /* gray, slightly transparent */
   pointer-events: none;
-  font-size: 13px;
-  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5); /* Prevents washout on bright white images */
+  /* Frosted glass container */
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 8px 12px;
+  /* Typography — monospace for data alignment */
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Courier New', monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #d1d5db;
   white-space: pre-wrap;
+  max-width: 380px;
+  /* Only shown when there is content */
+  min-width: 0;
+}
+
+#metadata-panel:empty {
+  display: none;
+}
+
+/* ─── Viewer loading overlay ─────────────────────────────────────────────────── */
+#viewer-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  /* Semi-transparent so it doesn't completely hide a previously loaded image */
+  background: rgba(17, 24, 39, 0.72);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+#viewer-loading-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* CSS-only spinner — no external image required */
+.spinner {
+  width: 44px;
+  height: 44px;
+  border: 3px solid rgba(56, 189, 248, 0.2);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-label {
+  font-size: 13px;
+  color: #9ca3af;
+  letter-spacing: 0.03em;
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -34,9 +35,27 @@ logging.getLogger("pyvips").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # --- SECURITY & AUTHENTICATION CONFIG ---
-SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+
+# Gap 1 fix: SECRET_KEY must be set as an environment variable in production.
+# The fallback generates a fresh random key on every process start, which
+# invalidates all active sessions after every container restart.
+_secret_key_from_env = os.environ.get("SECRET_KEY", "")
+if not _secret_key_from_env:
+    _secret_key_from_env = secrets.token_hex(32)
+    logger.warning(
+        "SECRET_KEY env var is not set — using an ephemeral key. "
+        "All sessions will be invalidated on every restart. "
+        "Set SECRET_KEY in your Azure Container App environment variables."
+    )
+SECRET_KEY = _secret_key_from_env
+
 SESSION_COOKIE_NAME = "ome_session"
 SESSION_EXPIRE_SECONDS = 86400 * 7  # 7 days
+
+# Gap 3 fix: read at startup so the same binary works locally (HTTP) and in
+# Azure (HTTPS). Set HTTPS_ONLY=true in the Container App env vars.
+HTTPS_ONLY = os.environ.get("HTTPS_ONLY", "false").lower() == "true"
+
 
 def hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
     """Hashes a password using PBKDF2 with SHA-256."""
@@ -62,11 +81,11 @@ def verify_session_token(token: str) -> Optional[str]:
         if len(parts) != 3:
             return None
         email, timestamp_str, signature = parts
-        
+
         # Check expiry
         if int(time.time()) - int(timestamp_str) > SESSION_EXPIRE_SECONDS:
             return None
-            
+
         data = f"{email}:{timestamp_str}"
         expected_sig = hmac.new(SECRET_KEY.encode(), data.encode(), hashlib.sha256).hexdigest()
         if hmac.compare_digest(signature, expected_sig):
@@ -75,18 +94,58 @@ def verify_session_token(token: str) -> Optional[str]:
         return None
     return None
 
-# Initial seed credentials (Change or replace with DB in future iterations)
-default_hash, default_salt = hash_password("admin123")
 
-USERS_DB = {
-    "admin@example.com": {
-        "email": "admin@example.com",
-        "hash": default_hash,
-        "salt": default_salt,
-        "role": "admin",
-        "allowed_paths": ["*"],  # Prepared for future per-file access control
+# --- Gap 2 fix: environment-variable user store ---
+#
+# Two loading modes, checked in priority order:
+#
+# Mode A — USERS_JSON (preferred for multiple users)
+#   Set to a JSON array where each element is a pre-hashed user object:
+#   '[{"email":"viewer@example.com","hash":"<hex>","salt":"<hex>","role":"viewer","allowed_paths":["*"]}]'
+#   Generate hash+salt pairs with:  python3 scripts/make_user.py
+#
+# Mode B — ADMIN_EMAIL + ADMIN_PASSWORD (simple single-user fallback)
+#   The plaintext password is hashed on startup. Suitable for a single admin
+#   account stored in Azure Key Vault as a secret.
+#
+# Neither mode stores credentials in source code.
+
+def _load_users_from_env() -> dict:
+    raw = os.environ.get("USERS_JSON", "").strip()
+    if raw:
+        try:
+            users: list[dict] = json.loads(raw)
+            if not isinstance(users, list):
+                raise ValueError("USERS_JSON must be a JSON array")
+            db = {u["email"]: u for u in users}
+            logger.info("Loaded %d user(s) from USERS_JSON", len(db))
+            return db
+        except Exception as exc:
+            # Fail hard — a silently empty user store is worse than a crash.
+            raise RuntimeError(f"USERS_JSON env var is malformed: {exc}") from exc
+
+    # Mode B fallback
+    email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
+    password = os.environ.get("ADMIN_PASSWORD", "change-me!")
+    if password == "change-me!":
+        logger.warning(
+            "ADMIN_PASSWORD is using the insecure default value. "
+            "Set ADMIN_PASSWORD (or USERS_JSON) in your environment variables."
+        )
+    h, s = hash_password(password)
+    logger.info("Loaded 1 user from ADMIN_EMAIL/ADMIN_PASSWORD env vars (%s)", email)
+    return {
+        email: {
+            "email": email,
+            "hash": h,
+            "salt": s,
+            "role": "admin",
+            "allowed_paths": ["*"],
+        }
     }
-}
+
+
+USERS_DB = _load_users_from_env()
 
 def get_current_user(ome_session: Optional[str] = Cookie(None, alias=SESSION_COOKIE_NAME)) -> dict:
     if not ome_session:
@@ -133,7 +192,11 @@ def login(credentials: LoginRequest, response: Response):
         httponly=True,
         samesite="lax",
         max_age=SESSION_EXPIRE_SECONDS,
-        secure=False,  # Set to True if serving over HTTPS
+        # Gap 3 fix: secure=True in Azure (HTTPS_ONLY=true), False in local dev.
+        # Azure Container Apps terminates TLS at its ingress layer and proxies
+        # plain HTTP internally, so secure=True is correct even though uvicorn
+        # itself doesn't see HTTPS.
+        secure=HTTPS_ONLY,
     )
     return {"email": user["email"], "role": user["role"]}
 
