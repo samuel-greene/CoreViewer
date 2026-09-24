@@ -52,6 +52,7 @@
   <div id="divider" title="Drag to resize"></div>
   
   <div id="viewer-container">
+    <div id="metadata-panel"></div>
     <div id="draw-toolbar">
       <button id="btn-draw" class="toolbar-btn">Laser Pointer</button>
       <button id="btn-select" class="toolbar-btn">Box Select</button>
@@ -285,6 +286,12 @@
       const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info`);
       if (!infoRes.ok) return;
       const info = await infoRes.json();
+
+      // Display metadata on screen
+      const metaPanel = document.getElementById("metadata-panel");
+      if (metaPanel) {
+        metaPanel.textContent = info.metadata_summary || "";
+      }
 
       const tileSource = {
         height: info.height,

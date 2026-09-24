@@ -391,3 +391,15 @@ body.resizing #viewer-container {
   color: #ef4444;
   text-decoration: underline;
 }
+
+#metadata-panel {
+  position: absolute;
+  bottom: 15px;
+  left: 15px;
+  z-index: 100;
+  color: rgba(156, 163, 175, 0.7); /* gray, slightly transparent */
+  pointer-events: none;
+  font-size: 13px;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5); /* Prevents washout on bright white images */
+  white-space: pre-wrap;
+}

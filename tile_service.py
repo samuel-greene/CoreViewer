@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -35,6 +36,8 @@ class Pyramid:
     width: int
     height: int
     levels: tuple[NativeLevel, ...]
+    raw_metadata: str = ""
+    metadata_summary: str = ""
 
     @property
     def osd_max_level(self) -> int:
@@ -110,6 +113,34 @@ def _try_page_levels(file_path: str, page_count: int, base: NativeLevel) -> list
     return levels
 
 
+def _extract_ome_metadata(description: str) -> str:
+    """Parses concise file specs from OME-XML strings."""
+    if not description:
+        return ""
+    if "<OME" not in description:
+        return description[:100]
+
+    meta_lines = []
+    size_x = re.search(r'SizeX="(\d+)"', description)
+    size_y = re.search(r'SizeY="(\d+)"', description)
+    size_c = re.search(r'SizeC="(\d+)"', description)
+    size_z = re.search(r'SizeZ="(\d+)"', description)
+    phys_x = re.search(r'PhysicalSizeX="([^"]+)"', description)
+    phys_x_unit = re.search(r'PhysicalSizeXUnit="([^"]+)"', description)
+
+    if size_x and size_y:
+        meta_lines.append(f"Dimensions: {size_x.group(1)}x{size_y.group(1)}")
+    if size_c and size_c.group(1) != "1":
+        meta_lines.append(f"Channels: {size_c.group(1)}")
+    if size_z and size_z.group(1) != "1":
+        meta_lines.append(f"Z-Slices: {size_z.group(1)}")
+    if phys_x:
+        unit = phys_x_unit.group(1) if phys_x_unit else "µm"
+        meta_lines.append(f"Pixel Size: {phys_x.group(1)}{unit}")
+
+    return " | ".join(meta_lines) if meta_lines else "OME-TIFF Metadata"
+
+
 _pyramid_cache: dict[tuple[str, float], Pyramid] = {}
 
 def discover_pyramid(file_path: str) -> Pyramid:
@@ -128,7 +159,14 @@ def discover_pyramid(file_path: str) -> Pyramid:
         if not reduced:
             reduced = _try_page_levels(file_path, base_image.get_n_pages(), base)
 
-        pyramid = Pyramid(base.width, base.height, tuple([base, *reduced]))
+        # Extract OME metadata
+        raw_metadata = ""
+        if base_image.get_typeof("image-description") != 0:
+            raw_metadata = base_image.get("image-description")
+            
+        metadata_summary = _extract_ome_metadata(raw_metadata)
+
+        pyramid = Pyramid(base.width, base.height, tuple([base, *reduced]), raw_metadata, metadata_summary)
         
         if len(_pyramid_cache) >= 16:
             _pyramid_cache.pop(next(iter(_pyramid_cache)))
@@ -151,6 +189,7 @@ def get_scan_info(file_path: str) -> dict[str, object]:
         "pyramid_levels": len(pyramid.levels),
         "tile_size": TILE_SIZE,
         "osd_max_level": pyramid.osd_max_level,
+        "metadata_summary": pyramid.metadata_summary,
         "levels": [
             {
                 "width": level.width,
@@ -244,6 +283,7 @@ def get_tile(file_path: str, osd_level: int, tile_x: int, tile_y: int) -> bytes:
         )
         raise ScanReadError(f"libvips could not create this tile: {exc}") from exc
 
+
 MARKING_SVG_COLOR = "rgb(239,68,68)"  # tailwind red-500, matches the viewer's on-screen laser color
 
 
@@ -306,28 +346,7 @@ def _svg_stroke_elements(markings: list[dict], default_width: float) -> list[str
 def _draw_markings(
     region: pyvips.Image, markings: list[dict], origin_x: int, origin_y: int
 ) -> pyvips.Image:
-    """Burns laser-pointer strokes into an already-cropped region.
-
-    `markings` points are in full-scan pixel coordinates (matching the
-    coordinate space the viewer records them in); `origin_x`/`origin_y` are
-    the crop's top-left corner in that same space, used to translate each
-    point into region-local coordinates.
-
-    The strokes are rendered once as SVG (round-capped/joined, so this
-    matches the on-screen canvas look) and rasterized with librsvg into a
-    same-size RGBA mask, then alpha-blended onto the region in a single
-    pass. This is one rasterize + one blend regardless of how many points
-    or strokes there are -- much faster than stamping individual shapes
-    onto a full-size image copy point by point, which got very slow on
-    large crops with long, detailed strokes.
-
-    The mask is always rendered as plain 8-bit RGBA (that's what librsvg
-    produces), so its color is scaled to the region's actual bit depth
-    before blending -- otherwise a 16-bit region would get compared/mixed
-    against 0-255 values and come out far too dim (or, worse, mismatched
-    band formats can make some blending ops silently corrupt untouched
-    pixels).
-    """
+    """Burns laser-pointer strokes into an already-cropped region."""
     if not markings:
         return region
 
@@ -358,12 +377,45 @@ def _draw_markings(
     blended = (mask_rgb * mask_alpha + base_rgb * (1 - mask_alpha)).cast(region.format)
 
     if region.bands > color_bands:
-        # Extra bands (alpha, or additional fluorescence/data channels) are
-        # left untouched rather than forced on -- we don't know what they
-        # represent, so we shouldn't overwrite their values.
         blended = blended.bandjoin(region[color_bands : region.bands])
 
     return blended
+
+
+def _draw_metadata(region: pyvips.Image, text: str) -> pyvips.Image:
+    """Burns text metadata as an SVG mask into the bottom left of the image."""
+    if not text:
+        return region
+
+    escaped_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    font_size = max(12, min(36, round(region.width / 40)))
+    x_pos = max(10, round(region.width * 0.02))
+    y_pos = region.height - max(10, round(region.height * 0.02))
+
+    # Match UI styling (gray, slightly transparent, subtle shadow)
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{region.width}" height="{region.height}">
+        <text x="{x_pos}" y="{y_pos}" font-family="monospace" font-size="{font_size}px" fill="rgba(156,163,175,0.7)" stroke="rgba(0,0,0,0.5)" stroke-width="0.5">{escaped_text}</text>
+    </svg>'''
+    
+    try:
+        mask = pyvips.Image.svgload_buffer(svg.encode("utf-8"))
+        if mask.bands < 4:
+            return region
+
+        color_bands = min(region.bands, 3)
+        max_value = _marking_max_value(region)
+        mask_rgb = (mask[0:color_bands]) * (max_value / 255.0)
+        mask_alpha = mask[3] / 255.0
+
+        base_rgb = region[0:color_bands]
+        blended = (mask_rgb * mask_alpha + base_rgb * (1 - mask_alpha)).cast(region.format)
+
+        if region.bands > color_bands:
+            blended = blended.bandjoin(region[color_bands : region.bands])
+
+        return blended
+    except pyvips.Error:
+        return region
 
 
 def crop_scan_region(
@@ -391,6 +443,11 @@ def crop_scan_region(
         if markings:
             region = _ensure_rgb_capable(region)
             region = _draw_markings(region, markings, x_val, y_val)
+
+        # Apply metadata overlay prior to final formatting
+        if pyramid.metadata_summary:
+            region = _ensure_rgb_capable(region)
+            region = _draw_metadata(region, pyramid.metadata_summary)
 
         fmt_normalized = fmt.lower().lstrip(".")
 
