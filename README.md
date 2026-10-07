@@ -104,3 +104,18 @@ libvips exposes Bio-Formats-style pyramid layers through the TIFF loader's `subi
 - Non-pyramidal TIFFs work, but low-zoom tiles must be downsampled from the full-resolution page and can be slower. Tiled pyramidal TIFFs give the intended region-read performance.
 - 16-bit integer pixels are shifted to 8-bit for JPEG without whole-image intensity analysis. Fluorescence scans may therefore need explicit window/level controls in a later version.
 - JPEG cannot preserve more than three channels or alpha; this proof of concept uses grayscale or the first three visible bands.
+
+## Optional CycleGAN virtual H&E
+
+Incoming offers conventional OME-TIFF export and, when the generator reports
+the configured GPU worker and model available, **CycleGAN virtual H&E**. The
+default checkpoint is shown with the processing choice. Inference creates a
+separate OME-TIFF; Processing reports startup, model loading, block counts,
+writing, validation and Open result. Retry keeps the inference operation and
+model/input identity. Guest access uses the existing `ALLOW_GUEST_PROCESSING`
+setting.
+
+Deploy the corresponding generator change and complete its
+[GPU/model setup](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/cyclegan-inference.md)
+before using this option. Existing generator versions and unconfigured workers
+continue to support conventional OME export.

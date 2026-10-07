@@ -388,6 +388,8 @@ def get_processing_user(user: dict = Depends(get_current_user)) -> dict:
 
 class ConversionRequest(BaseModel):
     folders: list[str] = Field(min_length=1, max_length=100)
+    operation: Literal["ome", "cyclegan"] = "ome"
+    retry_job_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 async def _generator_request(method: str, payload: dict | None = None) -> dict:
@@ -395,7 +397,7 @@ async def _generator_request(method: str, payload: dict | None = None) -> dict:
     if not url:
         raise HTTPException(status_code=503, detail="OME conversion service is not configured")
     try:
-        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=120 if method == "POST" else 10, trust_env=False) as client:
             response = await client.request(
                 method, f"{url}/api/jobs", json=payload,
             )
@@ -430,8 +432,12 @@ async def submit_conversion(body: ConversionRequest, user: dict = Depends(get_pr
         if path == root or not path.is_dir() or not _folder_readiness(path)["selectable"]:
             raise HTTPException(status_code=422, detail=f"Incomplete scan folder: {value}")
         folders.append(path.relative_to(root).as_posix())
-    return await _generator_request("POST", {"folders": list(dict.fromkeys(folders)),
-                                            "requested_by": user["email"]})
+    payload = {"folders": list(dict.fromkeys(folders)), "requested_by": user["email"]}
+    if body.operation != "ome":
+        payload["operation"] = body.operation
+    if body.retry_job_id:
+        payload["retry_job_id"] = body.retry_job_id
+    return await _generator_request("POST", payload)
 
 
 @lru_cache(maxsize=512)

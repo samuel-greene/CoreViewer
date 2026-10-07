@@ -53,6 +53,16 @@ class ProcessingTests(unittest.TestCase):
         proxy.assert_awaited_once_with("POST", {"folders": ["Scan001"],
                                               "requested_by": "operator@example.com"})
 
+    def test_inference_submission_and_retry_keep_operation_and_identity(self):
+        payload = {"folders": ["Scan001"], "operation": "cyclegan", "retry_job_id": "a" * 64}
+        with patch.object(main, "_generator_request", AsyncMock(return_value={"jobs": []})) as proxy:
+            self.assertEqual(self.client.post("/api/processing", json=payload).status_code, 202)
+            proxy.assert_awaited_once_with("POST", {**payload, "requested_by": "operator@example.com"})
+        for invalid in ({"operation": "arbitrary-model"}, {"retry_job_id": "../model.pth"}):
+            with patch.object(main, "_generator_request", AsyncMock()) as proxy:
+                self.assertEqual(self.client.post("/api/processing", json={"folders": ["Scan001"], **invalid}).status_code, 422)
+                proxy.assert_not_called()
+
     @patch.dict(os.environ, {"ALLOW_GUEST_PROCESSING": "false"})
     def test_guests_and_viewers_cannot_process_when_guest_access_disabled(self):
         for role in ("guest", "viewer"):

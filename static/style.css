@@ -782,3 +782,7 @@ body.resizing #viewer-container {
   color: #9ca3af;
   letter-spacing: 0.03em;
 }
+/* Processing choices and long model filenames in the resizable sidebar. */
+.processing-option { display: block; margin: 12px 0 4px; font-size: 12px; }
+.processing-option-select { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #374151; background: #1e2432; color: #d1d5db; }
+#inference-model, .conversion-job .job-time { overflow-wrap: anywhere; }
