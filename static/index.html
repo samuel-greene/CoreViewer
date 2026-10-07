@@ -79,49 +79,34 @@
     </section>
 
     <section id="incoming-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="incoming-tab" hidden>
+      <p class="panel-description">Select completed scan folders to generate OME-TIFFs.</p>
       <div id="incoming-message" class="incoming-message" role="status" hidden></div>
       <div id="incoming-path-header">Incoming scans</div>
       <div class="search-wrap">
-        <input type="text" id="incoming-search-box" placeholder="Filter incoming scans…" autocomplete="off" />
+        <input type="text" id="incoming-search-box" placeholder="Filter folders…" autocomplete="off" />
       </div>
-      <div class="table-header">
-        <span class="type-col">Type</span>
-        <span class="name-col">Name</span>
-      </div>
+      <label id="incoming-current-folder" class="current-folder-selection" hidden>
+        <input id="incoming-current-checkbox" type="checkbox" /> Select this scan folder
+      </label>
       <div id="incoming-file-list" class="file-list"></div>
-      <div id="incoming-no-results" class="no-results" hidden>No matches in this folder</div>
-      <p class="incoming-mount-note">Read-only Azure Files share: <code>incoming-scans</code></p>
+      <div id="incoming-no-results" class="no-results" hidden>No folders found</div>
+      <div class="conversion-actions">
+        <span id="selection-count" role="status">0 folders selected</span>
+        <button id="clear-selection" class="conversion-secondary" type="button" disabled>Clear</button>
+        <button id="generate-ome" class="conversion-primary" type="button" disabled>Generate OME-TIFF</button>
+      </div>
+      <p class="incoming-mount-note">Submit folders after all scan files have finished uploading.</p>
     </section>
 
-    <section
-      id="processing-panel"
-      class="sidebar-panel processing-panel"
-      role="tabpanel"
-      aria-labelledby="processing-tab"
-      hidden
-    >
-      <div class="processing-intro">
-        <div class="processing-icon" aria-hidden="true">GPU</div>
-        <h2>Inference processing</h2>
-        <p>Images queued for GPU inference will appear here.</p>
+    <section id="processing-panel" class="sidebar-panel processing-panel" role="tabpanel" aria-labelledby="processing-tab" hidden>
+      <div class="processing-heading">
+        <h2>OME-TIFF conversion</h2>
+        <button id="refresh-processing" class="conversion-secondary" type="button">Refresh</button>
       </div>
-      <div class="processing-preview">
-        <div class="processing-preview-heading">
-          <span>Queue status</span>
-          <span class="demo-badge">Preview</span>
-        </div>
-        <div class="processing-status-row">
-          <span class="status-dot queued"></span>
-          <span>Queued</span>
-          <span class="status-description">Waiting for a worker</span>
-        </div>
-        <div class="processing-status-row">
-          <span class="status-dot running"></span>
-          <span>Processing</span>
-          <span class="status-description">Running on GPU</span>
-        </div>
-      </div>
-      <p class="processing-note">GPU inference is not connected yet.</p>
+      <p class="panel-description">Conversions start only when you submit a folder.</p>
+      <div id="processing-message" class="incoming-message" role="status" hidden></div>
+      <div id="processing-jobs" aria-live="polite"></div>
+      <p id="processing-empty" class="panel-description">No conversions submitted yet.</p>
     </section>
   </div>
   
@@ -175,6 +160,7 @@
           panel.hidden = panel.id !== tab.getAttribute("aria-controls");
         });
         if (tab.id === "incoming-tab") loadDirectory("", "incoming");
+        if (tab.id === "processing-tab") loadProcessing();
       });
     });
 
@@ -186,6 +172,7 @@
           const user = await res.json();
           document.getElementById("login-overlay").style.display = "none";
           document.getElementById("user-email-display").textContent = user.email;
+          setProcessingUser(user);
           loadDirectory("");
         } else {
           showLoginModal();
@@ -222,6 +209,7 @@
           document.getElementById("login-overlay").style.display = "none";
           document.getElementById("user-email-display").textContent = user.email;
           document.getElementById("login-password").value = "";
+          setProcessingUser(user);
           loadDirectory("");
         } else {
           const errData = await res.json();
@@ -254,6 +242,7 @@
         const user = await res.json();
         document.getElementById("login-overlay").style.display = "none";
         document.getElementById("user-email-display").textContent = user.email;
+        setProcessingUser(user);
         loadDirectory("");
       } catch (err) {
         errorEl.textContent = "Could not start a guest session";
@@ -352,6 +341,7 @@
     }
 
     async function loadDirectory(prefix = "", source = "scans") {
+      if (source === "incoming") return loadIncomingFolders(prefix);
       const params = new URLSearchParams({ prefix, source });
       const res = await fetch(`/api/scans?${params}`);
       if (res.status === 401) {
@@ -909,9 +899,10 @@
       initDrawTool();
       initResizer();
       document.getElementById("search-box").addEventListener("input", filterRows);
-      document.getElementById("incoming-search-box").addEventListener("input", () => filterRows("incoming"));
+      document.getElementById("incoming-search-box").addEventListener("input", filterIncomingFolders);
       checkAuth();
     };
   </script>
+  <script src="processing.js"></script>
 </body>
 </html>

@@ -42,7 +42,38 @@ Other vendor compression variants and OME layouts still need representative-file
 
 The bottom-left metadata panel shows useful embedded OME-TIFF fields and, when present, scan, acquisition, specimen, and pixel-size summaries from `plan.json` and `ome-manifest.json` beside the image.
 
-The sidebar's **Incoming** tab browses TIFFs from a separate, read-only Azure Files mount. In Azure Container Apps, provision the Azure Files storage using the share name `incoming-scans`, add that storage to the Container Apps environment, and mount it into this container (for example at `/mnt/incoming-scans`). Set the Container App environment variable `INCOMING_SCANS_DIR=/mnt/incoming-scans` if using a different path. The application does not mount Azure storage itself; if the directory is not mounted, the tab displays an explicit unavailable message. Image metadata, tiles, downloads, and crops opened from Incoming continue to use that separate root.
+The sidebar's **Incoming** tab is a folder selector for manual OME-TIFF
+conversion. It lists folders, checks for one TIFF plus `plan.json` and
+`ome-manifest.json`, and allows selecting multiple completed scan folders.
+It does not open incoming images or offer incoming image downloads.
+Mount `incoming-scans` read-only at `/mnt/incoming-scans`, or set
+`INCOMING_SCANS_DIR` to the actual mount path. An absent mount returns a clear
+unavailable message. Only submit folders after the uploader finishes.
+
+**Processing** now shows persisted OME conversion jobs, real stage names,
+elapsed time, errors, manual retry, and an Open result button. It refreshes
+status every three seconds while an authorized viewer page is visible.
+Conversions continue when the browser tab closes. GPU inference is not part
+of this change.
+
+Configure backend environment variables:
+
+- `OME_GENERATOR_URL=http://ome-generator` for the generator in the same
+  Container Apps environment, using internal HTTP ingress on port 8000.
+- `OME_GENERATOR_API_KEY`: a shared secret of at least 32 characters. Store it
+  in Container App secrets and use the same value in both services.
+- `IMAGES_DIR`: a mount of the **same output share** the generator writes.
+  Returned output paths are relative to that share; mount paths can differ.
+
+The viewer forwards only folder names and the authenticated operator identity;
+no image bytes or service credentials pass through the browser. Accounts with
+role `admin` or `processor` can submit and track conversions. Other accounts
+and guests can continue ordinary image viewing. The default admin account
+already has the required role.
+
+The generator must run the matching manual API version. For coordinated
+cutover instructions, see [generator deployment](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/azure-deployment.md).
+The old automatic watcher revisions must be deactivated during cutover.
 
 The workspace launch configuration **OME-TIFF Viewer (Uvicorn)** starts the same command under the Python debugger, so breakpoints in `main.py` and `tile_service.py` work normally.
 
@@ -70,3 +101,4 @@ libvips exposes Bio-Formats-style pyramid layers through the TIFF loader's `subi
 - Non-pyramidal TIFFs work, but low-zoom tiles must be downsampled from the full-resolution page and can be slower. Tiled pyramidal TIFFs give the intended region-read performance.
 - 16-bit integer pixels are shifted to 8-bit for JPEG without whole-image intensity analysis. Fluorescence scans may therefore need explicit window/level controls in a later version.
 - JPEG cannot preserve more than three channels or alpha; this proof of concept uses grayscale or the first three visible bands.
+
