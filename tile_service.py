@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 import pyvips
+import imagecodecs
+import numpy as np
+import tifffile
 
 TILE_SIZE = 256
 JPEG_QUALITY = 85
@@ -53,15 +56,93 @@ def _metadata_int(image: pyvips.Image, name: str, default: int = 0) -> int:
         return default
 
 
-def _load_level(file_path: str, level: NativeLevel) -> pyvips.Image:
-    """Reads directly from the local SSD using native pyvips bindings."""
-    options: dict[str, object] = {"access": "random", "page": 0}
-    if level.source == "subifd":
-        options["subifd"] = level.index
-    else:
-        options["page"] = level.index
-        
+def _load_tiff(file_path: str, *, page: int = 0, subifd: int | None = None) -> pyvips.Image:
+    # Without strict decoding, unsupported compression can silently produce black tiles.
+    options: dict[str, object] = {"access": "random", "page": page, "fail_on": "warning"}
+    if subifd is not None:
+        options["subifd"] = subifd
     return pyvips.Image.tiffload(file_path, **options)
+
+
+def _load_level(file_path: str, level: NativeLevel) -> pyvips.Image:
+    if level.source == "subifd":
+        return _load_tiff(file_path, subifd=level.index)
+    return _load_tiff(file_path, page=level.index)
+
+
+def _load_region(
+    file_path: str,
+    level: NativeLevel,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+) -> pyvips.Image:
+    try:
+        with tifffile.TiffFile(file_path) as tiff:
+            if level.source == "subifd":
+                subpages = tiff.pages[0].pages
+                if subpages is None:
+                    raise ScanReadError("The TIFF pyramid's SubIFDs are missing")
+                page = subpages[level.index]
+            else:
+                page = tiff.pages[level.index]
+            if isinstance(page, tifffile.TiffFrame):
+                page = page.aspage()
+
+            if int(page.compression) != 34712:
+                return _load_level(file_path, level).crop(left, top, width, height)
+
+            if page.planarconfig != 1 or page.imagedepth != 1:
+                raise ScanReadError("JPEG 2000 TIFF decoding requires a 2D contiguous sample layout")
+            if page.photometric not in (0, 1, 2) or page.dtype.name not in ("uint8", "uint16"):
+                raise ScanReadError("JPEG 2000 TIFF decoding supports 8/16-bit grayscale and RGB pixels")
+            orientation = page.tags.get("Orientation")
+            if orientation is not None and orientation.value != 1:
+                raise ScanReadError("JPEG 2000 TIFF decoding requires top-left image orientation")
+
+            segment_width = page.tilewidth if page.is_tiled else page.imagewidth
+            segment_height = page.tilelength if page.is_tiled else page.rowsperstrip
+            columns = math.ceil(page.imagewidth / segment_width)
+            samples = page.samplesperpixel
+            pixels = np.empty((height, width, samples), dtype=page.dtype)
+
+            for row in range(top // segment_height, (top + height - 1) // segment_height + 1):
+                for column in range(left // segment_width, (left + width - 1) // segment_width + 1):
+                    index = row * columns + column
+                    byte_count = page.databytecounts[index]
+                    if not byte_count:
+                        raise ScanReadError(f"JPEG 2000 TIFF segment {index} is missing")
+                    tiff.filehandle.seek(page.dataoffsets[index])
+                    encoded = tiff.filehandle.read(byte_count)
+                    if len(encoded) != byte_count:
+                        raise ScanReadError(f"JPEG 2000 TIFF segment {index} is truncated")
+                    decoded, _, _ = page.decode(encoded, index)
+                    if decoded is None:
+                        raise ScanReadError(f"JPEG 2000 TIFF segment {index} could not be decoded")
+
+                    origin_x, origin_y = column * segment_width, row * segment_height
+                    x0, y0 = max(left, origin_x), max(top, origin_y)
+                    x1 = min(left + width, origin_x + segment_width)
+                    y1 = min(top + height, origin_y + segment_height)
+                    pixels[y0 - top : y1 - top, x0 - left : x1 - left] = decoded[
+                        0, y0 - origin_y : y1 - origin_y, x0 - origin_x : x1 - origin_x
+                    ]
+
+            if page.photometric == 0:
+                pixels[:, :, 0] = np.iinfo(page.dtype).max - pixels[:, :, 0]
+            pixel_format = "uchar" if page.dtype.name == "uint8" else "ushort"
+            interpretation = (
+                ("b-w" if pixel_format == "uchar" else "grey16")
+                if samples < 3
+                else ("srgb" if pixel_format == "uchar" else "rgb16")
+            )
+            return pyvips.Image.new_from_memory(
+                pixels.tobytes(), width, height, samples, pixel_format
+            ).copy(interpretation=interpretation)
+    except (OSError, ValueError, IndexError, NotImplementedError, imagecodecs.Jpeg2kError) as exc:
+        logger.exception("Failed to decode TIFF region: scan=%s level=%s", file_path, level)
+        raise ScanReadError(f"Could not decode TIFF region: {exc}") from exc
 
 
 def _same_image_shape(base_width: int, base_height: int, width: int, height: int) -> bool:
@@ -86,8 +167,10 @@ def _try_subifd_levels(file_path: str, base_image: pyvips.Image, base: NativeLev
     previous = base
     for index in indexes:
         try:
-            image = pyvips.Image.tiffload(file_path, page=0, subifd=index, access="random")
+            image = _load_tiff(file_path, subifd=index)
         except pyvips.Error:
+            if count:
+                raise
             break
         candidate = NativeLevel(image.width, image.height, "subifd", index)
         if not _is_next_reduced_level(previous, candidate, base):
@@ -101,10 +184,7 @@ def _try_page_levels(file_path: str, page_count: int, base: NativeLevel) -> list
     levels: list[NativeLevel] = []
     previous = base
     for page in range(1, min(page_count, MAX_DISCOVERED_LEVELS)):
-        try:
-            image = pyvips.Image.tiffload(file_path, page=page, access="random")
-        except pyvips.Error:
-            break
+        image = _load_tiff(file_path, page=page)
         candidate = NativeLevel(image.width, image.height, "page", page)
         if not _is_next_reduced_level(previous, candidate, base):
             break
@@ -152,7 +232,7 @@ def discover_pyramid(file_path: str) -> Pyramid:
         if key in _pyramid_cache:
             return _pyramid_cache[key]
             
-        base_image = pyvips.Image.tiffload(file_path, page=0, access="random")
+        base_image = _load_tiff(file_path)
         base = NativeLevel(base_image.width, base_image.height, "page", 0)
 
         reduced = _try_subifd_levels(file_path, base_image, base)
@@ -247,8 +327,6 @@ def get_tile(file_path: str, osd_level: int, tile_x: int, tile_y: int) -> bytes:
     native = _select_native_level(pyramid, target_width, target_height)
 
     try:
-        image = _load_level(file_path, native)
-
         source_left = math.floor(tile_left * native.width / target_width)
         source_top = math.floor(tile_top * native.height / target_height)
         source_right = math.ceil((tile_left + tile_width) * native.width / target_width)
@@ -256,7 +334,9 @@ def get_tile(file_path: str, osd_level: int, tile_x: int, tile_y: int) -> bytes:
         source_right = min(source_right, native.width)
         source_bottom = min(source_bottom, native.height)
 
-        region = image.crop(
+        region = _load_region(
+            file_path,
+            native,
             source_left,
             source_top,
             source_right - source_left,
@@ -437,8 +517,7 @@ def crop_scan_region(
         w_val = max(1, min(int(width), pyramid.width - x_val))
         h_val = max(1, min(int(height), pyramid.height - y_val))
 
-        image = _load_level(file_path, base)
-        region = image.crop(x_val, y_val, w_val, h_val)
+        region = _load_region(file_path, base, x_val, y_val, w_val, h_val)
 
         if markings:
             region = _ensure_rgb_capable(region)

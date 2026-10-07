@@ -6,7 +6,7 @@ A small FastAPI and OpenSeadragon proof of concept for browsing large pyramidal 
 
 Python 3.10 or newer is recommended. `pyvips` is a Python binding and also needs the native **libvips** runtime:
 
-- **Windows:** download a current `vips-dev-w64-all-*.zip` release from the [libvips releases](https://github.com/libvips/libvips/releases), extract it, and add its `bin` directory to `PATH`. Restart VS Code/your terminal afterward.
+- **Windows:** download the full `vips-dev-x64-all-*.zip` package (or the `all` package for your architecture) from the [Windows libvips releases](https://github.com/libvips/build-win64-mxe/releases), extract it, and add its `bin` directory to `PATH`. Restart VS Code/your terminal afterward. Use the full package, rather than `web` packages or `pyvips[binary]`, for libvips-native JPEG 2000 TIFF variants.
 - **Ubuntu/Debian:** `sudo apt install libvips42` (use `libvips-dev` too only when a source build needs headers).
 - **macOS:** `brew install vips`.
 
@@ -17,6 +17,22 @@ From this directory, create/activate a virtual environment and install the Pytho
     python -m pip install -r requirements.txt
 
 On Linux/macOS, activation is `source .venv/bin/activate`.
+
+## JPEG 2000-compressed OME-TIFF
+
+Standard JPEG 2000 TIFF compression tag 34712 is decoded with `tifffile` and `imagecodecs`: only the tiles or strips intersecting a requested region are read. The decoder supports 8/16-bit grayscale and RGB, contiguous samples, and top-left orientation. Unsupported layouts and damaged segments return explicit errors.
+
+Bio-Formats/Aperio JPEG 2000 TIFF tags handled natively by libvips still require a native build with OpenJPEG support. Installing OpenJPEG alongside a libvips build compiled without that support does not enable it. Standalone `.jp2` files are not supported by this viewer.
+
+Verify the actual runtime before using it:
+
+    python -m unittest discover -s tests -p "test_tiff_codecs.py"
+
+These tests use a small independently encoded JPEG 2000 OME-TIFF fixture, check its pyramid, and verify nonblank tiles at every zoom level and full-resolution pixel values. They cover both standard tag 34712 and native Bio-Formats tag 33004, 16-bit pixels, region-only segment reads, DEFLATE TIFFs, and decoder failures. No test-only dependencies are required. The Docker build runs the same tests and fails if decoding is incompatible.
+
+TIFF reads use `fail_on="warning"` so unsupported compression raises an error instead of silently returning black pixels. The viewer displays metadata and tile-load failures. This stricter behavior also rejects damaged TIFFs that libvips would otherwise partially recover.
+
+Other vendor compression variants and OME layouts still need representative-file testing.
 
 ## Run
 
@@ -32,7 +48,7 @@ The workspace launch configuration **OME-TIFF Viewer (Uvicorn)** starts the same
 - `tile_service.py` contains TIFF pyramid discovery, Deep Zoom coordinate mapping, region cropping, resizing, and JPEG encoding.
 - `static/index.html`, `viewer.js`, and `styles.css` provide the dependency-free OpenSeadragon interface.
 - `scans/` is the local scan directory.
-- `requirements.txt` contains only FastAPI, Uvicorn, and pyvips.
+- `requirements.txt` contains FastAPI, Uvicorn, pyvips, and the region-level JPEG 2000 TIFF decoder dependencies.
 
 ## Pyramid and OpenSeadragon level mapping
 
