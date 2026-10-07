@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from functools import lru_cache
@@ -289,11 +290,83 @@ def render_tile_cached(scan_id: str, level: int, x: int, y: int, local_path_str:
     return get_tile(local_path_str, level, x, y)
 
 
+def _format_companion_metadata_value(key: str, value: object) -> str:
+    labels = {
+        "planId": "Plan ID",
+        "specimenId": "Specimen ID",
+        "pixelFormat": "Pixel format",
+        "pixelSizeMicronsX": "Pixel size X",
+        "pixelSizeMicronsY": "Pixel size Y",
+        "zStepMicrons": "Z step",
+        "zLayerCount": "Z layers",
+        "exposureMicroseconds": "Exposure",
+        "gainDb": "Gain",
+        "acquiredUtc": "Acquired",
+    }
+    label = labels.get(key, re.sub(r"(?<!^)(?=[A-Z])", " ", key).title())
+    if isinstance(value, float):
+        formatted = f"{value:g}"
+    elif isinstance(value, bool):
+        formatted = "Yes" if value else "No"
+    else:
+        formatted = str(value)
+
+    units = {
+        "pixelSizeMicronsX": " µm",
+        "pixelSizeMicronsY": " µm",
+        "zStepMicrons": " µm",
+        "exposureMicroseconds": " µs",
+        "gainDb": " dB",
+    }
+    return f"{label}: {formatted}{units.get(key, '')}"
+
+
+def _companion_metadata_summary(image_path: Path) -> str:
+    sections = []
+    for filename in ("plan.json", "ome-manifest.json"):
+        metadata_path = image_path.parent / filename
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read companion metadata %s: %s", metadata_path, exc)
+            sections.append(f"{filename}: metadata could not be read")
+            continue
+
+        if not isinstance(metadata, dict):
+            logger.warning("Companion metadata %s must contain a JSON object", metadata_path)
+            sections.append(f"{filename}: metadata must be a JSON object")
+            continue
+
+        fields = []
+        for key, value in metadata.items():
+            if key == "tiles":
+                if isinstance(value, list):
+                    fields.append(f"Tiles: {len(value)}")
+            elif key == "cameraSettings" and isinstance(value, dict):
+                fields.extend(
+                    _format_companion_metadata_value(nested_key, nested_value)
+                    for nested_key, nested_value in value.items()
+                    if isinstance(nested_value, (str, int, float, bool))
+                )
+            elif isinstance(value, (str, int, float, bool)):
+                fields.append(_format_companion_metadata_value(key, value))
+
+        if fields:
+            title = "Plan" if filename == "plan.json" else "OME manifest"
+            sections.append(f"{title}:\n" + "\n".join(fields))
+
+    return "\n".join(sections)
+
+
 @app.get("/api/scans/{scan_id:path}/info")
 def scan_info(scan_id: str, user: dict = Depends(get_current_user)) -> dict[str, object]:
     local_path = get_local_scan_path(scan_id, user)
     try:
-        return get_scan_info(str(local_path))
+        info = get_scan_info(str(local_path))
+        info["companion_metadata_summary"] = _companion_metadata_summary(local_path)
+        return info
     except ScanReadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

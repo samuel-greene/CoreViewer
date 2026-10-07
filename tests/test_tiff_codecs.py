@@ -3,6 +3,7 @@ import math
 import tempfile
 import unittest
 import zlib
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ import imagecodecs
 import numpy as np
 import tifffile
 
+import main
 import tile_service
 
 
@@ -107,12 +109,87 @@ class TiffCodecTests(unittest.TestCase):
         info = tile_service.get_scan_info(str(self.path))
         self.assertEqual((info["width"], info["height"]), (52, 36))
         self.assertEqual(info["pyramid_levels"], 3)
-        self.assertIn("<OME", tile_service.discover_pyramid(str(self.path)).raw_metadata)
+        pyramid = tile_service.discover_pyramid(str(self.path))
+        self.assertIn("<OME", pyramid.raw_metadata)
+        self.assertNotIn(" | ", pyramid.metadata_summary)
         self.assertEqual(
             [(level["width"], level["height"]) for level in info["levels"]],
             [(52, 36), (26, 18), (13, 9)],
         )
         self.assert_tiles(self.path)
+
+    def test_ome_metadata_summary_includes_image_description_and_pixel_fields(self) -> None:
+        xml = (
+            '<OME xmlns="urn:ome"><Image Name="029P">'
+            "<Description>CoreView specimen: 029P; Objective: 20x; Modality: Fibi</Description>"
+            "<Pixels DimensionOrder=\"XYCZT\" Type=\"uint16\" SizeX=\"92975\" "
+            "SizeY=\"18637\" SizeC=\"3\" SizeZ=\"1\" SizeT=\"1\" "
+            "PhysicalSizeX=\"0.17431640625\" PhysicalSizeXUnit=\"µm\" "
+            "PhysicalSizeY=\"0.17431640625\" PhysicalSizeYUnit=\"µm\">"
+            "<Channel Name=\"DAPI\"/></Pixels></Image></OME>"
+        )
+
+        summary = tile_service._extract_ome_metadata(xml)
+
+        self.assertEqual(
+            summary.splitlines(),
+            [
+                "Image: 029P",
+                "Specimen: 029P",
+                "Objective: 20x",
+                "Modality: Fibi",
+                "Dimensions: 92975 × 18637",
+                "Pixel type: uint16",
+                "Dimension order: XYCZT",
+                "Channels: 3",
+                "Z-slices: 1",
+                "Time points: 1",
+                "Pixel size X: 0.17431640625 µm",
+                "Pixel size Y: 0.17431640625 µm",
+                "Channel names: DAPI",
+            ],
+        )
+
+    def test_scan_info_includes_companion_json_summary(self) -> None:
+        root = Path(self.directory.name).resolve()
+        scan_path = root / "scan.tif"
+        reference_image().tiffsave(str(scan_path), compression="deflate", tile=True)
+        (root / "plan.json").write_text(
+            json.dumps({
+                "planId": "plan-123",
+                "pattern": "ZStack",
+                "cameraSettings": {"exposureMicroseconds": 1500, "gainDb": 2},
+                "tiles": [{"tileId": 1}, {"tileId": 2}],
+            }),
+            encoding="utf-8",
+        )
+        (root / "ome-manifest.json").write_text(
+            json.dumps({
+                "specimenId": "sample-456",
+                "pixelFormat": "Rgb48",
+                "pixelSizeMicronsX": 0.17431640625,
+                "pixelSizeMicronsY": 0.17431640625,
+                "zStepMicrons": 1.5,
+                "zLayerCount": 34,
+                "tiles": [{"tileId": 1}],
+            }),
+            encoding="utf-8",
+        )
+
+        with patch.object(main, "MOUNT_DIR", root):
+            info = main.scan_info("scan.tif", user={})
+
+        summary = info["companion_metadata_summary"]
+        self.assertNotIn(" · ", summary)
+        self.assertTrue(summary.startswith("Plan:\nPlan ID: plan-123\n"))
+        self.assertIn("Plan ID: plan-123", summary)
+        self.assertIn("Pattern: ZStack", summary)
+        self.assertIn("Exposure: 1500 µs", summary)
+        self.assertIn("Tiles: 2", summary)
+        self.assertIn("Specimen ID: sample-456", summary)
+        self.assertIn("Pixel size X: 0.174316 µm", summary)
+        self.assertIn("Z layers: 34", summary)
+        self.assertIn("Tiles: 1", summary)
 
     def test_deflate_pixels(self) -> None:
         path = Path(self.directory.name) / "deflate.tif"

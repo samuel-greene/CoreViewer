@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Literal
 
@@ -200,25 +200,81 @@ def _extract_ome_metadata(description: str) -> str:
     if "<OME" not in description:
         return description[:100]
 
+    try:
+        root = ET.fromstring(description)
+    except ET.ParseError:
+        logger.warning("Could not parse embedded OME-XML metadata")
+        return "OME-TIFF Metadata"
+
+    def find_child(parent: ET.Element, name: str) -> ET.Element | None:
+        return next(
+            (child for child in parent if child.tag.rsplit("}", 1)[-1] == name),
+            None,
+        )
+
+    image = next(
+        (element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "Image"),
+        None,
+    )
+    pixels = next(
+        (element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "Pixels"),
+        None,
+    )
     meta_lines = []
-    size_x = re.search(r'SizeX="(\d+)"', description)
-    size_y = re.search(r'SizeY="(\d+)"', description)
-    size_c = re.search(r'SizeC="(\d+)"', description)
-    size_z = re.search(r'SizeZ="(\d+)"', description)
-    phys_x = re.search(r'PhysicalSizeX="([^"]+)"', description)
-    phys_x_unit = re.search(r'PhysicalSizeXUnit="([^"]+)"', description)
 
-    if size_x and size_y:
-        meta_lines.append(f"Dimensions: {size_x.group(1)}x{size_y.group(1)}")
-    if size_c and size_c.group(1) != "1":
-        meta_lines.append(f"Channels: {size_c.group(1)}")
-    if size_z and size_z.group(1) != "1":
-        meta_lines.append(f"Z-Slices: {size_z.group(1)}")
-    if phys_x:
-        unit = phys_x_unit.group(1) if phys_x_unit else "µm"
-        meta_lines.append(f"Pixel Size: {phys_x.group(1)}{unit}")
+    if image is not None:
+        image_name = image.get("Name")
+        if image_name:
+            meta_lines.append(f"Image: {image_name}")
 
-    return " | ".join(meta_lines) if meta_lines else "OME-TIFF Metadata"
+        acquisition_date = find_child(image, "AcquisitionDate")
+        if acquisition_date is not None and acquisition_date.text:
+            meta_lines.append(f"Acquired: {acquisition_date.text.strip()}")
+
+        image_description = find_child(image, "Description")
+        if image_description is not None and image_description.text:
+            description_parts = image_description.text.split(";")
+            for part in description_parts:
+                key, separator, value = part.partition(":")
+                if separator and value.strip():
+                    label = "Specimen" if key.strip().lower().endswith("specimen") else key.strip()
+                    meta_lines.append(f"{label}: {value.strip()}")
+                elif part.strip():
+                    meta_lines.append(f"Description: {part.strip()}")
+
+    if pixels is not None:
+        size_x, size_y = pixels.get("SizeX"), pixels.get("SizeY")
+        if size_x and size_y:
+            meta_lines.append(f"Dimensions: {size_x} × {size_y}")
+
+        for attribute, label in (
+            ("Type", "Pixel type"),
+            ("DimensionOrder", "Dimension order"),
+            ("SizeC", "Channels"),
+            ("SizeZ", "Z-slices"),
+            ("SizeT", "Time points"),
+        ):
+            value = pixels.get(attribute)
+            if value:
+                meta_lines.append(f"{label}: {value}")
+
+        for axis in ("X", "Y", "Z"):
+            value = pixels.get(f"PhysicalSize{axis}")
+            if value:
+                unit = pixels.get(f"PhysicalSize{axis}Unit", "µm")
+                meta_lines.append(f"Pixel size {axis}: {value} {unit}")
+
+        channel_names = []
+        for channel in pixels:
+            if channel.tag.rsplit("}", 1)[-1] != "Channel":
+                continue
+            name = channel.get("Name") or channel.get("Fluor")
+            if name:
+                channel_names.append(name)
+        if channel_names:
+            meta_lines.append(f"Channel names: {', '.join(channel_names)}")
+
+    return "\n".join(meta_lines) if meta_lines else "OME-TIFF Metadata"
 
 
 _pyramid_cache: dict[tuple[str, float], Pyramid] = {}

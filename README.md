@@ -40,6 +40,8 @@ Other vendor compression variants and OME layouts still need representative-file
 2. From the `viewer/` directory run `uvicorn main:app --reload`.
 3. Open <http://127.0.0.1:8000>.
 
+The bottom-left metadata panel shows useful embedded OME-TIFF fields and, when present, scan, acquisition, specimen, and pixel-size summaries from `plan.json` and `ome-manifest.json` beside the image.
+
 The workspace launch configuration **OME-TIFF Viewer (Uvicorn)** starts the same command under the Python debugger, so breakpoints in `main.py` and `tile_service.py` work normally.
 
 ## Files

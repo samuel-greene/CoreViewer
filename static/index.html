@@ -429,7 +429,9 @@
         // Update metadata panel content
         const metaPanel = document.getElementById("metadata-panel");
         if (metaPanel) {
-          metaPanel.textContent = info.metadata_summary || "";
+          metaPanel.textContent = [info.metadata_summary, info.companion_metadata_summary]
+            .filter(Boolean)
+            .join("\n");
         }
 
         const tileSource = {
