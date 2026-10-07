@@ -379,19 +379,15 @@ class ConversionRequest(BaseModel):
 
 async def _generator_request(method: str, payload: dict | None = None) -> dict:
     url = os.environ.get("OME_GENERATOR_URL", "").rstrip("/")
-    key = os.environ.get("OME_GENERATOR_API_KEY", "")
-    if not url or len(key) < 32:
+    if not url:
         raise HTTPException(status_code=503, detail="OME conversion service is not configured")
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
             response = await client.request(
                 method, f"{url}/api/jobs", json=payload,
-                headers={"Authorization": f"Bearer {key}"},
             )
         if response.status_code == 422:
             raise HTTPException(status_code=422, detail=response.json().get("detail", "Invalid scan folder"))
-        if response.status_code in {401, 403}:
-            raise HTTPException(status_code=503, detail="OME conversion service credentials need configuration")
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):

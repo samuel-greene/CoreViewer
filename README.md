@@ -60,13 +60,13 @@ Configure backend environment variables:
 
 - `OME_GENERATOR_URL=http://ome-generator` for the generator in the same
   Container Apps environment, using internal HTTP ingress on port 8000.
-- `OME_GENERATOR_API_KEY`: a shared secret of at least 32 characters. Store it
-  in Container App secrets and use the same value in both services.
 - `IMAGES_DIR`: a mount of the **same output share** the generator writes.
   Returned output paths are relative to that share; mount paths can differ.
 
-The viewer forwards only folder names and the authenticated operator identity;
-no image bytes or service credentials pass through the browser. Accounts with
+The generator connection uses internal ingress without a shared API key. Keep
+the generator ingress private to the Container Apps environment. The viewer
+forwards only folder names and the authenticated operator identity; no image
+bytes pass through the browser. Accounts with
 role `admin` or `processor` can submit and track conversions. Other accounts
 and guests can continue ordinary image viewing. The default admin account
 already has the required role.
@@ -101,4 +101,3 @@ libvips exposes Bio-Formats-style pyramid layers through the TIFF loader's `subi
 - Non-pyramidal TIFFs work, but low-zoom tiles must be downsampled from the full-resolution page and can be slower. Tiled pyramidal TIFFs give the intended region-read performance.
 - 16-bit integer pixels are shifted to 8-bit for JPEG without whole-image intensity analysis. Fluorescence scans may therefore need explicit window/level controls in a later version.
 - JPEG cannot preserve more than three channels or alpha; this proof of concept uses grayscale or the first three visible bands.
-

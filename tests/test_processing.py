@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -76,7 +75,7 @@ class ProcessingTests(unittest.TestCase):
     def test_job_status_is_forwarded_and_unconfigured_service_is_explicit(self):
         with patch.object(main, "_generator_request", AsyncMock(return_value={"jobs": []})):
             self.assertEqual(self.client.get("/api/processing").json(), {"jobs": []})
-        with patch.dict(os.environ, {"OME_GENERATOR_URL": "", "OME_GENERATOR_API_KEY": ""}):
+        with patch.dict(os.environ, {"OME_GENERATOR_URL": ""}):
             result = self.client.get("/api/processing")
         self.assertEqual(result.status_code, 503)
         self.assertIn("not configured", result.json()["detail"])
@@ -93,7 +92,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in listing["directories"]],
                          ["Incomplete", "Scan001"])
 
-    def test_generator_proxy_uses_server_secret_and_maps_unavailable_errors(self):
+    def test_generator_proxy_needs_only_url_and_maps_unavailable_errors(self):
         requests = []
         real_client = httpx.AsyncClient
 
@@ -101,19 +100,17 @@ class ProcessingTests(unittest.TestCase):
             requests.append(request)
             return httpx.Response(202, json={"jobs": []})
 
-        with patch.dict(os.environ, {"OME_GENERATOR_URL": "http://generator",
-                                   "OME_GENERATOR_API_KEY": "k" * 32}), patch.object(
+        with patch.dict(os.environ, {"OME_GENERATOR_URL": "http://generator"}, clear=True), patch.object(
                 main.httpx, "AsyncClient", side_effect=lambda **kwargs: real_client(
                     transport=httpx.MockTransport(handler), **kwargs)):
             result = self.client.post("/api/processing", json={"folders": ["Scan001"]})
         self.assertEqual(result.status_code, 202)
-        self.assertEqual(requests[0].headers["Authorization"], "Bearer " + "k" * 32)
+        self.assertNotIn("Authorization", requests[0].headers)
         self.assertEqual(json.loads(requests[0].content)["folders"], ["Scan001"])
-        self.assertNotIn("k" * 32, result.text)
 
         for code, expected in [(401, 503), (500, 503), (422, 422)]:
             with self.subTest(code=code), patch.dict(os.environ, {
-                    "OME_GENERATOR_URL": "http://generator", "OME_GENERATOR_API_KEY": "k" * 32
+                    "OME_GENERATOR_URL": "http://generator"
                 }), patch.object(main.httpx, "AsyncClient",
                     side_effect=lambda **kwargs: real_client(
                         transport=httpx.MockTransport(lambda request: httpx.Response(
