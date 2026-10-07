@@ -22,7 +22,7 @@ On Linux/macOS, activation is `source .venv/bin/activate`.
 
 Standard JPEG 2000 TIFF compression tag 34712 is decoded with `tifffile` and `imagecodecs`: only the tiles or strips intersecting a requested region are read. The decoder supports 8/16-bit grayscale and RGB, contiguous samples, and top-left orientation. Unsupported layouts and damaged segments return explicit errors.
 
-Bio-Formats/Aperio JPEG 2000 TIFF tags handled natively by libvips still require a native build with OpenJPEG support. Installing OpenJPEG alongside a libvips build compiled without that support does not enable it. Standalone `.jp2` files are not supported by this viewer.
+Bio-Formats/Aperio JPEG 2000 TIFF tags handled natively by libvips still require a native build with OpenJPEG support. Installing OpenJPEG alongside a libvips build compiled without that support does not enable it. Standalone `.jp2` files are not supported for direct viewing; the Incoming tab can submit JP2 scan folders for conversion to OME-TIFF.
 
 Verify the actual runtime before using it:
 
@@ -43,7 +43,7 @@ Other vendor compression variants and OME layouts still need representative-file
 The bottom-left metadata panel shows useful embedded OME-TIFF fields and, when present, scan, acquisition, specimen, and pixel-size summaries from `plan.json` and `ome-manifest.json` beside the image.
 
 The sidebar's **Incoming** tab is a folder selector for manual OME-TIFF
-conversion. It lists folders, checks for one TIFF plus `plan.json` and
+conversion. It lists folders, checks for exactly one TIFF or JP2 plus `plan.json` and
 `ome-manifest.json`, and allows selecting multiple completed scan folders.
 It does not open incoming images or offer incoming image downloads.
 Mount `incoming-scans` read-only at `/mnt/incoming-scans`, or set

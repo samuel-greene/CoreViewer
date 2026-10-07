@@ -344,15 +344,15 @@ def list_scans(
 
 def _folder_readiness(folder: Path) -> dict:
     try:
-        tiffs = [path for path in folder.iterdir()
-                 if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}]
+        images = [path for path in folder.iterdir()
+                 if path.is_file() and path.suffix.lower() in {".tif", ".tiff", ".jp2"}]
         metadata = [folder / name for name in ("plan.json", "ome-manifest.json")]
-        selectable = (len(tiffs) == 1 and all(path.is_file() for path in metadata)
-                      and not any(path.is_symlink() for path in [*tiffs, *metadata]))
+        selectable = (len(images) == 1 and all(path.is_file() for path in metadata)
+                      and not any(path.is_symlink() for path in [*images, *metadata]))
         return {
             "selectable": selectable,
             "reason": "Ready to submit" if selectable else
-                      "Needs one TIFF, plan.json, and ome-manifest.json",
+                      "Needs exactly one TIFF or JP2, plan.json, and ome-manifest.json",
         }
     except OSError:
         return {"selectable": False, "reason": "Folder could not be read"}
