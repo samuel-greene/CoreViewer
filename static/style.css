@@ -421,6 +421,18 @@ body.resizing #viewer-container {
   border-color: #38bdf8;
 }
 
+.login-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.login-divider {
+  color: #6b7280;
+  font-size: 12px;
+  margin: 12px 0 4px;
+  text-align: center;
+}
+
 .login-error {
   color: #ef4444;
   font-size: 13px;

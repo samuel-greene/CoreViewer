@@ -51,6 +51,7 @@ SECRET_KEY = _secret_key_from_env
 
 SESSION_COOKIE_NAME = "ome_session"
 SESSION_EXPIRE_SECONDS = 86400 * 7  # 7 days
+GUEST_SESSION_SUBJECT = "guest"
 
 # Gap 3 fix: read at startup so the same binary works locally (HTTP) and in
 # Azure (HTTPS). Set HTTPS_ONLY=true in the Container App env vars.
@@ -153,6 +154,8 @@ def get_current_user(ome_session: Optional[str] = Cookie(None, alias=SESSION_COO
     if not ome_session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     email = verify_session_token(ome_session)
+    if email == GUEST_SESSION_SUBJECT:
+        return {"email": "Guest", "role": "guest", "allowed_paths": ["*"]}
     if not email or email not in USERS_DB:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
     return USERS_DB[email]
@@ -181,26 +184,39 @@ class LoginRequest(BaseModel):
 
 # --- AUTH ENDPOINTS ---
 
-@app.post("/api/auth/login")
-def login(credentials: LoginRequest, response: Response):
-    user = USERS_DB.get(credentials.email.lower().strip())
-    if not user or not verify_password(credentials.password, user["hash"], user["salt"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    token = create_session_token(user["email"])
+def _set_session_cookie(response: Response, subject: str) -> None:
+    token = create_session_token(subject)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
         samesite="lax",
         max_age=SESSION_EXPIRE_SECONDS,
-        # Gap 3 fix: secure=True in Azure (HTTPS_ONLY=true), False in local dev.
         # Azure Container Apps terminates TLS at its ingress layer and proxies
         # plain HTTP internally, so secure=True is correct even though uvicorn
         # itself doesn't see HTTPS.
         secure=HTTPS_ONLY,
     )
+
+
+@app.post("/api/auth/login")
+def login(credentials: LoginRequest, response: Response):
+    user = USERS_DB.get(credentials.email.lower().strip())
+    if (
+        not user
+        or user["email"].lower().strip() == GUEST_SESSION_SUBJECT
+        or not verify_password(credentials.password, user["hash"], user["salt"])
+    ):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    _set_session_cookie(response, user["email"])
     return {"email": user["email"], "role": user["role"]}
+
+
+@app.post("/api/auth/guest")
+def guest_login(response: Response):
+    _set_session_cookie(response, GUEST_SESSION_SUBJECT)
+    return {"email": "Guest", "role": "guest"}
+
 
 @app.post("/api/auth/logout")
 def logout(response: Response):

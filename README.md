@@ -44,6 +44,7 @@ libvips exposes Bio-Formats-style pyramid layers through the TIFF loader's `subi
 
 ## Current limitations
 
+- Guest Login currently bypasses credential checks and grants access to scans; do not expose it in production.
 - This first version displays the first TIFF/OME image plane only; it does not yet select OME series, Z, C, or T dimensions.
 - Some vendor TIFF layouts mix scenes, planes, associated images, and pyramid levels in ways libvips cannot identify unambiguously. Discovery therefore stops at the first dimension mismatch rather than guessing.
 - Non-pyramidal TIFFs work, but low-zoom tiles must be downsampled from the full-resolution page and can be slower. Tiled pyramidal TIFFs give the intended region-read performance.
