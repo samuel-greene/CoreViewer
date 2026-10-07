@@ -54,6 +54,7 @@
   <div id="divider" title="Drag to resize"></div>
   
   <div id="viewer-container">
+    <div id="viewer-error" role="alert" hidden></div>
     <div id="viewer-loading-overlay">
       <div class="spinner"></div>
       <span class="loading-label">Loading image…</span>
@@ -77,6 +78,7 @@
   <script>
     let viewer = null;
     let currentScanId = null;
+    let pendingOpenHandler = null;
     let activeTool = 'none';
     let strokes = [];
     let selectionBox = null;
@@ -230,6 +232,33 @@
         timeout: 30000,
         backgroundColor: "#111827"
       });
+      viewer.addHandler("open-failed", (event) => {
+        if (event.source && event.source.scanId !== currentScanId) return;
+        showViewerError(event.message || "The image could not be opened.");
+      });
+      viewer.addHandler("tile-load-failed", (event) => {
+        if (event.tiledImage.source.scanId !== currentScanId) return;
+        showViewerError(
+          "An image tile could not be decoded or loaded. Check the server logs and " +
+          "ensure the TIFF decoder dependencies support this file's compression. " + (event.message || "")
+        );
+      });
+    }
+
+    function showViewerError(message) {
+      console.error(message);
+      const errorEl = document.getElementById("viewer-error");
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+      document.getElementById("viewer-loading-overlay").classList.remove("visible");
+      document.getElementById("metadata-panel").textContent = "";
+      document.querySelectorAll(".row").forEach(row => row.classList.remove("loading", "active"));
+      if (pendingOpenHandler) {
+        viewer.removeHandler("open", pendingOpenHandler);
+        pendingOpenHandler = null;
+      }
+      currentScanId = null;
+      viewer.close();
     }
 
     async function loadDirectory(prefix = "") {
@@ -374,6 +403,11 @@
 
     async function openImage(scanId, clickedRow = null) {
       currentScanId = scanId;
+      if (pendingOpenHandler) {
+        viewer.removeHandler("open", pendingOpenHandler);
+        pendingOpenHandler = null;
+      }
+      document.getElementById("viewer-error").hidden = true;
 
       // Show loading overlay immediately so the user knows the click registered
       const overlay = document.getElementById("viewer-loading-overlay");
@@ -381,12 +415,17 @@
 
       try {
         const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info`);
+        if (currentScanId !== scanId) return;
         if (!infoRes.ok) {
-          overlay.classList.remove("visible");
-          if (clickedRow) clickedRow.classList.remove("loading");
-          return;
+          if (infoRes.status === 401) showLoginModal();
+          const contentType = infoRes.headers.get("content-type") || "";
+          const detail = contentType.includes("application/json")
+            ? (await infoRes.json()).detail
+            : infoRes.statusText;
+          throw new Error(detail || `Image metadata request failed (${infoRes.status}).`);
         }
         const info = await infoRes.json();
+        if (currentScanId !== scanId) return;
 
         // Update metadata panel content
         const metaPanel = document.getElementById("metadata-panel");
@@ -395,6 +434,7 @@
         }
 
         const tileSource = {
+          scanId,
           height: info.height,
           width: info.width,
           tileSize: info.tile_size,
@@ -405,19 +445,21 @@
         };
 
         // Hide overlay once the first frame is rendered, then mark row active
-        viewer.addOnceHandler("open", () => {
+        pendingOpenHandler = () => {
+          viewer.removeHandler("open", pendingOpenHandler);
+          pendingOpenHandler = null;
+          if (currentScanId !== scanId) return;
           overlay.classList.remove("visible");
           if (clickedRow) {
             clickedRow.classList.remove("loading");
             clickedRow.classList.add("active");
           }
-        });
+        };
+        viewer.addHandler("open", pendingOpenHandler);
 
         viewer.open(tileSource);
       } catch (err) {
-        // On network error hide the overlay so the UI isn't stuck
-        overlay.classList.remove("visible");
-        if (clickedRow) clickedRow.classList.remove("loading");
+        if (currentScanId === scanId) showViewerError(err.message);
       }
     }
 
