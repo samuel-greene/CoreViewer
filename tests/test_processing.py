@@ -53,7 +53,8 @@ class ProcessingTests(unittest.TestCase):
         proxy.assert_awaited_once_with("POST", {"folders": ["Scan001"],
                                               "requested_by": "operator@example.com"})
 
-    def test_guests_and_viewers_cannot_submit_or_read_job_records(self):
+    @patch.dict(os.environ, {"ALLOW_GUEST_PROCESSING": "false"})
+    def test_guests_and_viewers_cannot_process_when_guest_access_disabled(self):
         for role in ("guest", "viewer"):
             main.app.dependency_overrides[main.get_current_user] = lambda role=role: {
                 "email": "guest", "role": role}
@@ -63,6 +64,41 @@ class ProcessingTests(unittest.TestCase):
                                  json={"folders": ["Scan001"]}).status_code, 403)
                 proxy.assert_not_called()
             self.assertFalse(self.client.get("/api/incoming").json()["can_submit"])
+
+    def test_guest_session_can_submit_and_track_by_default(self):
+        # Exercise a real guest cookie, including the capability used by the UI.
+        main.app.dependency_overrides.clear()
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+                main, "_generator_request", AsyncMock(return_value={"jobs": []})) as proxy:
+            login = self.client.post("/api/auth/guest")
+            self.assertTrue(login.json()["can_process"])
+            self.assertTrue(self.client.get("/api/auth/me").json()["can_process"])
+            self.assertTrue(self.client.get("/api/incoming").json()["can_submit"])
+            self.assertEqual(self.client.get("/api/processing").status_code, 200)
+            self.assertEqual(self.client.post("/api/processing",
+                             json={"folders": ["Scan001"]}).status_code, 202)
+            proxy.assert_awaited_with("POST", {"folders": ["Scan001"], "requested_by": "Guest"})
+            with patch.dict(os.environ, {"ALLOW_GUEST_PROCESSING": "false"}):
+                self.assertFalse(self.client.get("/api/auth/me").json()["can_process"])
+                self.assertEqual(self.client.get("/api/processing").status_code, 403)
+                self.assertEqual(self.client.post("/api/processing",
+                                 json={"folders": ["Scan001"]}).status_code, 403)
+
+    def test_guest_switch_does_not_grant_viewer_or_anonymous_access(self):
+        with patch.dict(os.environ, {"ALLOW_GUEST_PROCESSING": "true"}):
+            main.app.dependency_overrides[main.get_current_user] = lambda: {
+                "email": "viewer", "role": "viewer"}
+            self.assertFalse(self.client.get("/api/auth/me").json()["can_process"])
+            self.assertEqual(self.client.get("/api/processing").status_code, 403)
+            main.app.dependency_overrides.clear()
+            self.assertEqual(self.client.get("/api/processing").status_code, 401)
+            self.assertEqual(self.client.post("/api/processing",
+                             json={"folders": ["Scan001"]}).status_code, 401)
+
+    def test_guest_switch_keeps_admin_and_processor_access(self):
+        with patch.dict(os.environ, {"ALLOW_GUEST_PROCESSING": "false"}):
+            for role in ("admin", "processor"):
+                self.assertTrue(main.can_process({"role": role}))
 
     def test_invalid_incomplete_or_oversized_batches_never_reach_generator(self):
         for folders in ([], ["../outside"], ["/absolute"], ["Incomplete"], [""],

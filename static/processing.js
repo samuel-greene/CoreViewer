@@ -7,7 +7,7 @@ let processingRequestActive = false;
 let incomingRequestNumber = 0;
 
 function setProcessingUser(user) {
-  processingAllowed = ["admin", "processor"].includes(user.role);
+  processingAllowed = user.can_process === true;
   clearInterval(processingTimer);
   processingTimer = null;
   updateConversionSelection();
@@ -18,9 +18,11 @@ function setProcessingUser(user) {
     }, 3000);
   } else {
     document.getElementById("processing-message").textContent =
-      "Sign in with an admin or processor account to submit and track conversions.";
+      "This account is not permitted to submit or track conversions.";
     document.getElementById("processing-message").hidden = false;
     document.getElementById("processing-empty").hidden = true;
+    document.getElementById("processing-jobs").replaceChildren();
+    document.querySelector(".processing-count").textContent = "0";
   }
 }
 
@@ -66,7 +68,7 @@ async function loadIncomingFolders(prefix = "") {
     if (requestNumber !== incomingRequestNumber) return;
     processingAllowed = data.can_submit;
     message.hidden = processingAllowed;
-    message.textContent = "An admin or processor account is required to submit conversions.";
+    message.textContent = "This account is not permitted to submit conversions.";
     renderBreadcrumbs(data.current_path, "incoming");
     list.replaceChildren();
     if (data.parent_prefix !== null) {
