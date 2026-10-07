@@ -53,6 +53,27 @@ class ProcessingTests(unittest.TestCase):
         proxy.assert_awaited_once_with("POST", {"folders": ["Scan001"],
                                               "requested_by": "operator@example.com"})
 
+    def test_jp2_folder_is_selectable_and_submittable_for_both_operations(self):
+        (self.scan / "scan.tif").unlink()
+        (self.scan / "scan.JP2").touch()
+        self.assertTrue(self.client.get("/api/incoming?prefix=Scan001").json()["current_folder"]["selectable"])
+        for operation in ("ome", "cyclegan"):
+            with patch.object(main, "_generator_request", AsyncMock(return_value={"jobs": []})) as proxy:
+                self.assertEqual(self.client.post("/api/processing", json={
+                    "folders": ["Scan001"], "operation": operation}).status_code, 202)
+                proxy.assert_awaited_once()
+
+    def test_mixed_or_multiple_jp2_sources_cannot_be_submitted(self):
+        (self.scan / "scan.jp2").touch()
+        for multiple_jp2 in (False, True):
+            if multiple_jp2:
+                (self.scan / "scan.tif").unlink()
+                (self.scan / "second.JP2").touch()
+            self.assertFalse(self.client.get("/api/incoming?prefix=Scan001").json()["current_folder"]["selectable"])
+            with patch.object(main, "_generator_request", AsyncMock()) as proxy:
+                self.assertEqual(self.client.post("/api/processing", json={"folders": ["Scan001"]}).status_code, 422)
+                proxy.assert_not_called()
+
     def test_inference_submission_and_retry_keep_operation_and_identity(self):
         payload = {"folders": ["Scan001"], "operation": "cyclegan", "retry_job_id": "a" * 64}
         with patch.object(main, "_generator_request", AsyncMock(return_value={"jobs": []})) as proxy:
