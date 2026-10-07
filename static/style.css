@@ -219,6 +219,31 @@ body {
   text-align: center;
 }
 
+.panel-description { color: #9ca3af; font-size: 12px; line-height: 1.5; margin-bottom: 12px; }
+.conversion-folder { gap: 10px; cursor: default; align-items: center; }
+.conversion-folder input, .current-folder-selection input { accent-color: #38bdf8; flex-shrink: 0; }
+.folder-details { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.folder-link { background: none; border: 0; color: #38bdf8; text-align: left; cursor: pointer; font: inherit; max-width: 100%; }
+.folder-readiness { color: #9ca3af; font-size: 11px; line-height: 1.4; }
+.current-folder-selection { display: flex; align-items: center; gap: 8px; padding: 10px 0; color: #d1d5db; }
+.conversion-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid #353737; }
+#selection-count { flex: 1; color: #9ca3af; font-size: 12px; }
+.conversion-primary, .conversion-secondary { padding: 7px 10px; border-radius: 5px; font: inherit; cursor: pointer; }
+.conversion-primary { width: 100%; background: #0284c7; color: white; border: 1px solid #0284c7; }
+.conversion-secondary { background: #252a34; color: #d1d5db; border: 1px solid #374151; }
+.conversion-primary:disabled, .conversion-secondary:disabled { opacity: .45; cursor: default; }
+.processing-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.processing-heading h2 { font-size: 14px; }
+.conversion-job { padding: 12px; margin-bottom: 10px; border: 1px solid #374151; border-left: 3px solid #fbbf24; border-radius: 6px; background: #191b1c; }
+.conversion-job.running { border-left-color: #38bdf8; }
+.conversion-job.completed { border-left-color: #34d399; }
+.conversion-job.failed { border-left-color: #f87171; }
+.conversion-job h3 { font-size: 13px; overflow-wrap: anywhere; margin-bottom: 7px; }
+.job-stage { color: #d1d5db; font-size: 12px; }
+.job-time { color: #9ca3af; font-size: 11px; margin-top: 5px; }
+.job-error { color: #fca5a5; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; margin-top: 8px; }
+.conversion-job button { margin-top: 10px; }
+
 
 /* ─── Breadcrumb navigation ─────────────────────────────────────────────────── */
 #path-header {

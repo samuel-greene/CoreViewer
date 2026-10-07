@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import time
+import httpx
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
@@ -15,7 +16,7 @@ from typing import Literal, Optional
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tile_service import (
     InvalidTileRequest,
@@ -162,6 +163,19 @@ def get_current_user(ome_session: Optional[str] = Cookie(None, alias=SESSION_COO
     return USERS_DB[email]
 
 
+def can_process(user: dict) -> bool:
+    role = user.get("role")
+    return role in {"admin", "processor"} or (
+        role == "guest" and
+        os.environ.get("ALLOW_GUEST_PROCESSING", "true").strip().lower() == "true"
+    )
+
+
+def session_info(user: dict) -> dict:
+    return {"email": user["email"], "role": user["role"],
+            "can_process": can_process(user)}
+
+
 def _resolve_mount_dir() -> Path:
     override = os.environ.get("IMAGES_DIR")
     if override:
@@ -213,13 +227,13 @@ def login(credentials: LoginRequest, response: Response):
     ):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     _set_session_cookie(response, user["email"])
-    return {"email": user["email"], "role": user["role"]}
+    return session_info(user)
 
 
 @app.post("/api/auth/guest")
 def guest_login(response: Response):
     _set_session_cookie(response, GUEST_SESSION_SUBJECT)
-    return {"email": "Guest", "role": "guest"}
+    return session_info({"email": "Guest", "role": "guest"})
 
 
 @app.post("/api/auth/logout")
@@ -229,7 +243,7 @@ def logout(response: Response):
 
 @app.get("/api/auth/me")
 def get_me(user: dict = Depends(get_current_user)):
-    return {"email": user["email"], "role": user["role"]}
+    return session_info(user)
 
 
 # --- PROTECTED SCAN ENDPOINTS ---
@@ -291,6 +305,8 @@ def _list_scans_in_directory(root: Path, prefix: str) -> dict[str, object]:
 
     try:
         for item_name in os.listdir(target_dir):
+            if item_name.startswith("."):
+                continue
             item_path = target_dir / item_name
             if item_path.is_dir():
                 directories.append({"name": item_name, "path": f"{prefix}{item_name}/"})
@@ -324,6 +340,98 @@ def list_scans(
     user: dict = Depends(get_current_user),
 ) -> dict[str, object]:
     return _list_scans_in_directory(_scan_root(source), prefix)
+
+
+def _folder_readiness(folder: Path) -> dict:
+    try:
+        tiffs = [path for path in folder.iterdir()
+                 if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}]
+        metadata = [folder / name for name in ("plan.json", "ome-manifest.json")]
+        selectable = (len(tiffs) == 1 and all(path.is_file() for path in metadata)
+                      and not any(path.is_symlink() for path in [*tiffs, *metadata]))
+        return {
+            "selectable": selectable,
+            "reason": "Ready to submit" if selectable else
+                      "Needs one TIFF, plan.json, and ome-manifest.json",
+        }
+    except OSError:
+        return {"selectable": False, "reason": "Folder could not be read"}
+
+
+@app.get("/api/incoming")
+def list_incoming_folders(prefix: str = "", user: dict = Depends(get_current_user)):
+    root = _scan_root("incoming")
+    listing = _list_scans_in_directory(root, prefix)
+    directories = []
+    for item in listing["directories"]:
+        path = _resolve_scan_path(root, item["path"], "Invalid directory request")
+        directories.append({**item, **_folder_readiness(path)})
+    current = _resolve_scan_path(root, prefix, "Invalid directory request")
+    return {
+        "current_path": listing["current_path"],
+        "parent_prefix": listing["parent_prefix"],
+        "directories": directories,
+        "current_folder": {
+            "path": current.relative_to(root).as_posix(),
+            **(_folder_readiness(current) if current != root else
+               {"selectable": False, "reason": "Select a scan folder"}),
+        },
+        "can_submit": can_process(user),
+    }
+
+
+def get_processing_user(user: dict = Depends(get_current_user)) -> dict:
+    if not can_process(user):
+        raise HTTPException(status_code=403, detail="This account is not permitted to process scans")
+    return user
+
+
+class ConversionRequest(BaseModel):
+    folders: list[str] = Field(min_length=1, max_length=100)
+
+
+async def _generator_request(method: str, payload: dict | None = None) -> dict:
+    url = os.environ.get("OME_GENERATOR_URL", "").rstrip("/")
+    if not url:
+        raise HTTPException(status_code=503, detail="OME conversion service is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+            response = await client.request(
+                method, f"{url}/api/jobs", json=payload,
+            )
+        if response.status_code == 422:
+            raise HTTPException(status_code=422, detail=response.json().get("detail", "Invalid scan folder"))
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+            raise ValueError("Invalid jobs response")
+        return data
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("OME conversion service request failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="OME conversion service is unavailable. Try again shortly.") from exc
+
+
+@app.get("/api/processing")
+async def processing_status(user: dict = Depends(get_processing_user)):
+    return await _generator_request("GET")
+
+
+@app.post("/api/processing", status_code=202)
+async def submit_conversion(body: ConversionRequest, user: dict = Depends(get_processing_user)):
+    # Enforce that every request refers to an existing scan folder on the
+    # read-only incoming mount before forwarding it to the private service.
+    root = _scan_root("incoming")
+    folders = []
+    for value in body.folders:
+        if not value or len(value) > 512 or "\\" in value or any(
+                not part or part.startswith(".") for part in value.split("/")):
+            raise HTTPException(status_code=422, detail="Choose a scan folder within incoming-scans")
+        path = _resolve_scan_path(root, value, "Invalid folder request")
+        if path == root or not path.is_dir() or not _folder_readiness(path)["selectable"]:
+            raise HTTPException(status_code=422, detail=f"Incomplete scan folder: {value}")
+        folders.append(path.relative_to(root).as_posix())
+    return await _generator_request("POST", {"folders": list(dict.fromkeys(folders)),
+                                            "requested_by": user["email"]})
 
 
 @lru_cache(maxsize=512)
