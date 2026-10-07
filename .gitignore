@@ -1,5 +1,6 @@
 __pycache__/
 .venv/
+scans/*
 scans/*.tif
 scans/*.tiff
 
