@@ -38,16 +38,68 @@
       <span id="user-email-display" class="user-email"></span>
       <button id="btn-logout" class="logout-btn">Sign Out</button>
     </div>
-    <div id="path-header">Index of /</div>
-    <div class="search-wrap">
-      <input type="text" id="search-box" placeholder="Filter files and folders…" autocomplete="off" />
+    <div class="sidebar-tabs" role="tablist" aria-label="Sidebar views">
+      <button
+        type="button"
+        id="files-tab"
+        class="sidebar-tab active"
+        role="tab"
+        aria-selected="true"
+        aria-controls="files-panel"
+      >Files</button>
+      <button
+        type="button"
+        id="processing-tab"
+        class="sidebar-tab"
+        role="tab"
+        aria-selected="false"
+        aria-controls="processing-panel"
+      >Processing <span class="processing-count">0</span></button>
     </div>
-    <div class="table-header">
-      <span class="type-col">Type</span>
-      <span class="name-col">Name</span>
-    </div>
-    <div id="file-list" class="file-list"></div>
-    <div id="no-results" class="no-results" hidden>No matches in this folder</div>
+
+    <section id="files-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="files-tab">
+      <div id="path-header">Index of /</div>
+      <div class="search-wrap">
+        <input type="text" id="search-box" placeholder="Filter files and folders…" autocomplete="off" />
+      </div>
+      <div class="table-header">
+        <span class="type-col">Type</span>
+        <span class="name-col">Name</span>
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div id="no-results" class="no-results" hidden>No matches in this folder</div>
+    </section>
+
+    <section
+      id="processing-panel"
+      class="sidebar-panel processing-panel"
+      role="tabpanel"
+      aria-labelledby="processing-tab"
+      hidden
+    >
+      <div class="processing-intro">
+        <div class="processing-icon" aria-hidden="true">GPU</div>
+        <h2>Inference processing</h2>
+        <p>Images queued for GPU inference will appear here.</p>
+      </div>
+      <div class="processing-preview">
+        <div class="processing-preview-heading">
+          <span>Queue status</span>
+          <span class="demo-badge">Preview</span>
+        </div>
+        <div class="processing-status-row">
+          <span class="status-dot queued"></span>
+          <span>Queued</span>
+          <span class="status-description">Waiting for a worker</span>
+        </div>
+        <div class="processing-status-row">
+          <span class="status-dot running"></span>
+          <span>Processing</span>
+          <span class="status-description">Running on GPU</span>
+        </div>
+      </div>
+      <p class="processing-note">GPU inference is not connected yet.</p>
+    </section>
   </div>
   
   <div id="divider" title="Drag to resize"></div>
@@ -87,6 +139,18 @@
     const SIDEBAR_MIN_PX = 160;
     const SIDEBAR_MAX_RATIO = 0.7;
     const SIDEBAR_WIDTH_KEY = "ome-viewer-sidebar-width";
+
+    document.querySelectorAll(".sidebar-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const showFiles = tab.id === "files-tab";
+        document.getElementById("files-tab").classList.toggle("active", showFiles);
+        document.getElementById("processing-tab").classList.toggle("active", !showFiles);
+        document.getElementById("files-tab").setAttribute("aria-selected", String(showFiles));
+        document.getElementById("processing-tab").setAttribute("aria-selected", String(!showFiles));
+        document.getElementById("files-panel").hidden = !showFiles;
+        document.getElementById("processing-panel").hidden = showFiles;
+      });
+    });
 
     // --- AUTHENTICATION CONTROLLER ---
     async function checkAuth() {
@@ -276,7 +340,7 @@
 
       if (data.parent_prefix !== null) {
         listEl.appendChild(
-          createRow("[DIR]", "..", () => loadDirectory(data.parent_prefix), null, { isParentNav: true })
+          createRow("[DIR]", "..", () => loadDirectory(data.parent_prefix), null, null, { isParentNav: true })
         );
       }
 

@@ -26,7 +26,7 @@ Bio-Formats/Aperio JPEG 2000 TIFF tags handled natively by libvips still require
 
 Verify the actual runtime before using it:
 
-    python -m unittest discover -s tests -p "test_tiff_codecs.py"
+    python -m unittest discover -s tests
 
 These tests use a small independently encoded JPEG 2000 OME-TIFF fixture, check its pyramid, and verify nonblank tiles at every zoom level and full-resolution pixel values. They cover both standard tag 34712 and native Bio-Formats tag 33004, 16-bit pixels, region-only segment reads, DEFLATE TIFFs, and decoder failures. No test-only dependencies are required. The Docker build runs the same tests and fails if decoding is incompatible.
 

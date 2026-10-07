@@ -119,7 +119,7 @@ def _load_users_from_env() -> dict:
             users: list[dict] = json.loads(raw)
             if not isinstance(users, list):
                 raise ValueError("USERS_JSON must be a JSON array")
-            db = {u["email"]: u for u in users}
+            db = {u["email"].lower().strip(): u for u in users}
             logger.info("Loaded %d user(s) from USERS_JSON", len(db))
             return db
         except Exception as exc:
@@ -139,7 +139,7 @@ def _load_users_from_env() -> dict:
     h, s = hash_password(password)
     logger.info("Loaded 1 user from ADMIN_EMAIL/ADMIN_PASSWORD env vars (%s)", email)
     return {
-        email: {
+        email.lower().strip(): {
             "email": email,
             "hash": h,
             "salt": s,

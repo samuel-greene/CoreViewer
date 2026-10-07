@@ -21,8 +21,8 @@ RUN python -m pip install -r requirements.txt
 WORKDIR /app
 COPY . /app
 
-# Exercise both JPEG 2000 decoder paths in the runtime shipped by this image.
-RUN python -m unittest discover -s tests -p "test_tiff_codecs.py"
+# Run the codec and authentication regression tests in the shipped runtime.
+RUN python -m unittest discover -s tests
 
 # Creates a non-root user with an explicit UID and adds permission to access the /app folder
 # For more info, please refer to https://aka.ms/vscode-docker-python-configure-containers
