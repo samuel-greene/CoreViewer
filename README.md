@@ -66,10 +66,13 @@ Configure backend environment variables:
 The generator connection uses internal ingress without a shared API key. Keep
 the generator ingress private to the Container Apps environment. The viewer
 forwards only folder names and the authenticated operator identity; no image
-bytes pass through the browser. Accounts with
-role `admin` or `processor` can submit and track conversions. Other accounts
-and guests can continue ordinary image viewing. The default admin account
-already has the required role.
+bytes pass through the browser. Accounts with role `admin` or `processor` can
+submit and track conversions. Guests can also submit, retry and view job
+history for now: `ALLOW_GUEST_PROCESSING` defaults to `true`. Set it to `false`
+in the viewer's Azure environment settings to disable guest processing without
+editing code. The browser uses the server's permission response. Other viewer
+accounts remain limited to image viewing, and guest viewing still works when
+guest processing is disabled.
 
 The generator must run the matching manual API version. For coordinated
 cutover instructions, see [generator deployment](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/azure-deployment.md).

@@ -163,6 +163,19 @@ def get_current_user(ome_session: Optional[str] = Cookie(None, alias=SESSION_COO
     return USERS_DB[email]
 
 
+def can_process(user: dict) -> bool:
+    role = user.get("role")
+    return role in {"admin", "processor"} or (
+        role == "guest" and
+        os.environ.get("ALLOW_GUEST_PROCESSING", "true").strip().lower() == "true"
+    )
+
+
+def session_info(user: dict) -> dict:
+    return {"email": user["email"], "role": user["role"],
+            "can_process": can_process(user)}
+
+
 def _resolve_mount_dir() -> Path:
     override = os.environ.get("IMAGES_DIR")
     if override:
@@ -214,13 +227,13 @@ def login(credentials: LoginRequest, response: Response):
     ):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     _set_session_cookie(response, user["email"])
-    return {"email": user["email"], "role": user["role"]}
+    return session_info(user)
 
 
 @app.post("/api/auth/guest")
 def guest_login(response: Response):
     _set_session_cookie(response, GUEST_SESSION_SUBJECT)
-    return {"email": "Guest", "role": "guest"}
+    return session_info({"email": "Guest", "role": "guest"})
 
 
 @app.post("/api/auth/logout")
@@ -230,7 +243,7 @@ def logout(response: Response):
 
 @app.get("/api/auth/me")
 def get_me(user: dict = Depends(get_current_user)):
-    return {"email": user["email"], "role": user["role"]}
+    return session_info(user)
 
 
 # --- PROTECTED SCAN ENDPOINTS ---
@@ -363,13 +376,13 @@ def list_incoming_folders(prefix: str = "", user: dict = Depends(get_current_use
             **(_folder_readiness(current) if current != root else
                {"selectable": False, "reason": "Select a scan folder"}),
         },
-        "can_submit": user.get("role") in {"admin", "processor"},
+        "can_submit": can_process(user),
     }
 
 
 def get_processing_user(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") not in {"admin", "processor"}:
-        raise HTTPException(status_code=403, detail="An admin or processor account is required")
+    if not can_process(user):
+        raise HTTPException(status_code=403, detail="This account is not permitted to process scans")
     return user
 
 

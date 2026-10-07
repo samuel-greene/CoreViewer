@@ -13,7 +13,8 @@ class AuthTests(unittest.TestCase):
 
         result = main.guest_login(response)
 
-        self.assertEqual(result, {"email": "Guest", "role": "guest"})
+        self.assertEqual(result, {"email": "Guest", "role": "guest",
+                                  "can_process": main.can_process({"role": "guest"})})
         self.assertIn(main.SESSION_COOKIE_NAME, response.headers["set-cookie"])
         token = response.headers["set-cookie"].split("=", 1)[1].split(";", 1)[0]
         user = main.get_current_user(token)
