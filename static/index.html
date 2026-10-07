@@ -79,7 +79,7 @@
     </section>
 
     <section id="incoming-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="incoming-tab" hidden>
-      <p class="panel-description">Select completed scan folders to generate OME-TIFFs.</p>
+      <p class="panel-description">Select completed scan folders for OME-TIFF export or virtual H&E.</p>
       <div id="incoming-message" class="incoming-message" role="status" hidden></div>
       <div id="incoming-path-header">Incoming scans</div>
       <div class="search-wrap">
@@ -90,6 +90,12 @@
       </label>
       <div id="incoming-file-list" class="file-list"></div>
       <div id="incoming-no-results" class="no-results" hidden>No folders found</div>
+      <label class="processing-option" for="processing-operation">Processing option</label>
+      <select id="processing-operation" class="processing-option-select">
+        <option value="ome">Generate OME-TIFF</option>
+        <option id="cyclegan-option" value="cyclegan" disabled>CycleGAN virtual H&E (OME-TIFF)</option>
+      </select>
+      <p id="inference-model" class="panel-description"></p>
       <div class="conversion-actions">
         <span id="selection-count" role="status">0 folders selected</span>
         <button id="clear-selection" class="conversion-secondary" type="button" disabled>Clear</button>
@@ -100,13 +106,13 @@
 
     <section id="processing-panel" class="sidebar-panel processing-panel" role="tabpanel" aria-labelledby="processing-tab" hidden>
       <div class="processing-heading">
-        <h2>OME-TIFF conversion</h2>
+        <h2>Scan processing</h2>
         <button id="refresh-processing" class="conversion-secondary" type="button">Refresh</button>
       </div>
-      <p class="panel-description">Conversions start only when you submit a folder.</p>
+      <p class="panel-description">Processing starts only when you submit a folder.</p>
       <div id="processing-message" class="incoming-message" role="status" hidden></div>
       <div id="processing-jobs" aria-live="polite"></div>
-      <p id="processing-empty" class="panel-description">No conversions submitted yet.</p>
+      <p id="processing-empty" class="panel-description">No jobs submitted yet.</p>
     </section>
   </div>
   

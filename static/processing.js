@@ -5,6 +5,16 @@ let submittingConversion = false;
 let processingTimer = null;
 let processingRequestActive = false;
 let incomingRequestNumber = 0;
+let inferenceAvailable = false;
+
+function setInferenceCapability(inference) {
+  inferenceAvailable = inference?.available === true;
+  document.getElementById("cyclegan-option").disabled = !inferenceAvailable;
+  document.getElementById("inference-model").textContent = inferenceAvailable
+    ? "Default model: " + inference.model_name
+    : (inference?.reason || "CycleGAN inference is not available yet.");
+  updateConversionSelection();
+}
 
 function setProcessingUser(user) {
   processingAllowed = user.can_process === true;
@@ -17,6 +27,7 @@ function setProcessingUser(user) {
       if (!document.hidden) loadProcessing();
     }, 3000);
   } else {
+    setInferenceCapability(null);
     document.getElementById("processing-message").textContent =
       "This account is not permitted to submit or track conversions.";
     document.getElementById("processing-message").hidden = false;
@@ -31,8 +42,10 @@ function updateConversionSelection() {
   document.getElementById("selection-count").textContent =
     count + (count === 1 ? " folder selected" : " folders selected");
   const generate = document.getElementById("generate-ome");
-  generate.disabled = !processingAllowed || count === 0 || submittingConversion;
-  generate.textContent = submittingConversion ? "Submitting…" : "Generate OME-TIFF";
+  const inference = document.getElementById("processing-operation").value === "cyclegan";
+  generate.disabled = !processingAllowed || count === 0 || submittingConversion || (inference && !inferenceAvailable);
+  generate.textContent = submittingConversion ? "Submitting…" : (inference ? "Generate virtual H&E" : "Generate OME-TIFF");
+  document.getElementById("processing-operation").disabled = !processingAllowed || submittingConversion;
   document.getElementById("clear-selection").disabled = count === 0 || submittingConversion;
   document.querySelectorAll("[data-scan-folder]").forEach(checkbox => {
     checkbox.checked = selectedFolders.has(checkbox.dataset.scanFolder);
@@ -132,11 +145,14 @@ function filterIncomingFolders() {
   empty.hidden = visible !== 0;
 }
 
-async function submitConversionFolders(folders) {
+async function submitConversionFolders(folders, operation = "ome", retryJobId = null) {
+  const payload = {folders};
+  if (operation !== "ome") payload.operation = operation;
+  if (retryJobId) payload.retry_job_id = retryJobId;
   const response = await fetch("/api/processing", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({folders}),
+    body: JSON.stringify(payload),
   });
   return readConversionResponse(response);
 }
@@ -146,7 +162,7 @@ document.getElementById("generate-ome").addEventListener("click", async () => {
   submittingConversion = true;
   updateConversionSelection();
   try {
-    await submitConversionFolders([...selectedFolders.keys()]);
+    await submitConversionFolders([...selectedFolders.keys()], document.getElementById("processing-operation").value);
     selectedFolders.clear();
     showProcessingTab();
   } catch (error) {
@@ -169,6 +185,8 @@ const conversionStages = {
   waiting_for_upload: "Waiting for upload to finish", loading: "Loading image",
   writing: "Writing OME-TIFF", validating: "Validating output",
   completed: "Completed", failed: "Failed",
+  starting_gpu: "Starting inference worker", loading_model: "Loading CycleGAN model",
+  inferencing: "Applying CycleGAN",
 };
 
 function renderConversionJobs(jobs) {
@@ -193,6 +211,16 @@ function renderConversionJobs(jobs) {
     times.textContent = (job.status === "queued" ? "Waiting: " : "Elapsed: ") +
       Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
     card.append(name, stage, times);
+    const operation = document.createElement("p");
+    operation.className = "job-time";
+    operation.textContent = job.operation === "cyclegan" ? "CycleGAN virtual H&E · " + job.inference.model_name : "OME-TIFF export";
+    card.appendChild(operation);
+    if (job.progress?.total_blocks) {
+      const progress = document.createElement("p");
+      progress.className = "job-time";
+      progress.textContent = job.progress.completed_blocks + " / " + job.progress.total_blocks + " blocks processed";
+      card.appendChild(progress);
+    }
     if (job.error) {
       const error = document.createElement("p");
       error.className = "job-error";
@@ -216,11 +244,13 @@ function renderConversionJobs(jobs) {
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "conversion-secondary";
-      retry.textContent = "Retry conversion";
+      const waitingForGpu = job.operation === "cyclegan" && job.gpu_dispatch_started_at && !job.gpu_execution_finished;
+      retry.disabled = Boolean(waitingForGpu);
+      retry.textContent = waitingForGpu ? "Waiting for worker shutdown" : "Retry processing";
       retry.addEventListener("click", async () => {
         retry.disabled = true;
         try {
-          await submitConversionFolders([job.folder]);
+          await submitConversionFolders([job.folder], job.operation || "ome", job.operation === "cyclegan" ? job.id : null);
           await loadProcessing();
         } catch (error) {
           const message = document.getElementById("processing-message");
@@ -243,6 +273,7 @@ async function loadProcessing() {
     const response = await fetch("/api/processing");
     const data = await readConversionResponse(response);
     message.hidden = true;
+    setInferenceCapability(data.inference);
     renderConversionJobs(data.jobs);
   } catch (error) {
     message.textContent = error.message;
@@ -253,3 +284,4 @@ async function loadProcessing() {
 }
 
 document.getElementById("refresh-processing").addEventListener("click", loadProcessing);
+document.getElementById("processing-operation").addEventListener("change", updateConversionSelection);
