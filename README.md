@@ -42,6 +42,8 @@ Other vendor compression variants and OME layouts still need representative-file
 
 The bottom-left metadata panel shows useful embedded OME-TIFF fields and, when present, scan, acquisition, specimen, and pixel-size summaries from `plan.json` and `ome-manifest.json` beside the image.
 
+The sidebar's **Incoming** tab browses TIFFs from a separate, read-only Azure Files mount. In Azure Container Apps, provision the Azure Files storage using the share name `incoming-scans`, add that storage to the Container Apps environment, and mount it into this container (for example at `/mnt/incoming-scans`). Set the Container App environment variable `INCOMING_SCANS_DIR=/mnt/incoming-scans` if using a different path. The application does not mount Azure storage itself; if the directory is not mounted, the tab displays an explicit unavailable message. Image metadata, tiles, downloads, and crops opened from Incoming continue to use that separate root.
+
 The workspace launch configuration **OME-TIFF Viewer (Uvicorn)** starts the same command under the Python debugger, so breakpoints in `main.py` and `tile_service.py` work normally.
 
 ## Files

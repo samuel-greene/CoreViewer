@@ -49,6 +49,14 @@
       >Files</button>
       <button
         type="button"
+        id="incoming-tab"
+        class="sidebar-tab"
+        role="tab"
+        aria-selected="false"
+        aria-controls="incoming-panel"
+      >Incoming</button>
+      <button
+        type="button"
         id="processing-tab"
         class="sidebar-tab"
         role="tab"
@@ -68,6 +76,21 @@
       </div>
       <div id="file-list" class="file-list"></div>
       <div id="no-results" class="no-results" hidden>No matches in this folder</div>
+    </section>
+
+    <section id="incoming-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="incoming-tab" hidden>
+      <div id="incoming-message" class="incoming-message" role="status" hidden></div>
+      <div id="incoming-path-header">Incoming scans</div>
+      <div class="search-wrap">
+        <input type="text" id="incoming-search-box" placeholder="Filter incoming scans…" autocomplete="off" />
+      </div>
+      <div class="table-header">
+        <span class="type-col">Type</span>
+        <span class="name-col">Name</span>
+      </div>
+      <div id="incoming-file-list" class="file-list"></div>
+      <div id="incoming-no-results" class="no-results" hidden>No matches in this folder</div>
+      <p class="incoming-mount-note">Read-only Azure Files share: <code>incoming-scans</code></p>
     </section>
 
     <section
@@ -129,6 +152,7 @@
   <script>
     let viewer = null;
     let currentScanId = null;
+    let currentScanSource = "scans";
     let pendingOpenHandler = null;
     let activeTool = 'none';
     let strokes = [];
@@ -142,13 +166,15 @@
 
     document.querySelectorAll(".sidebar-tab").forEach((tab) => {
       tab.addEventListener("click", () => {
-        const showFiles = tab.id === "files-tab";
-        document.getElementById("files-tab").classList.toggle("active", showFiles);
-        document.getElementById("processing-tab").classList.toggle("active", !showFiles);
-        document.getElementById("files-tab").setAttribute("aria-selected", String(showFiles));
-        document.getElementById("processing-tab").setAttribute("aria-selected", String(!showFiles));
-        document.getElementById("files-panel").hidden = !showFiles;
-        document.getElementById("processing-panel").hidden = showFiles;
+        document.querySelectorAll(".sidebar-tab").forEach((candidate) => {
+          const selected = candidate === tab;
+          candidate.classList.toggle("active", selected);
+          candidate.setAttribute("aria-selected", String(selected));
+        });
+        document.querySelectorAll(".sidebar-panel").forEach((panel) => {
+          panel.hidden = panel.id !== tab.getAttribute("aria-controls");
+        });
+        if (tab.id === "incoming-tab") loadDirectory("", "incoming");
       });
     });
 
@@ -296,11 +322,11 @@
         backgroundColor: "#111827"
       });
       viewer.addHandler("open-failed", (event) => {
-        if (event.source && event.source.scanId !== currentScanId) return;
+        if (event.source && event.source.sourceKey !== `${currentScanSource}:${currentScanId}`) return;
         showViewerError(event.message || "The image could not be opened.");
       });
       viewer.addHandler("tile-load-failed", (event) => {
-        if (event.tiledImage.source.scanId !== currentScanId) return;
+        if (event.tiledImage.source.sourceKey !== `${currentScanSource}:${currentScanId}`) return;
         showViewerError(
           "An image tile could not be decoded or loaded. Check the server logs and " +
           "ensure the TIFF decoder dependencies support this file's compression. " + (event.message || "")
@@ -321,53 +347,85 @@
         pendingOpenHandler = null;
       }
       currentScanId = null;
+      currentScanSource = "scans";
       viewer.close();
     }
 
-    async function loadDirectory(prefix = "") {
-      const res = await fetch(`/api/scans?prefix=${encodeURIComponent(prefix)}`);
+    async function loadDirectory(prefix = "", source = "scans") {
+      const params = new URLSearchParams({ prefix, source });
+      const res = await fetch(`/api/scans?${params}`);
       if (res.status === 401) {
         showLoginModal();
         return;
       }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const message = body.detail || res.statusText || "Could not load scans";
+        if (source === "incoming") {
+          const messageEl = document.getElementById("incoming-message");
+          messageEl.textContent = message;
+          messageEl.hidden = false;
+          document.getElementById("incoming-file-list").replaceChildren();
+          document.getElementById("incoming-no-results").hidden = true;
+          return;
+        }
+        throw new Error(message);
+      }
       const data = await res.json();
 
       // --- Render interactive breadcrumbs ---
-      renderBreadcrumbs(data.current_path);
+      renderBreadcrumbs(data.current_path, source);
 
-      const listEl = document.getElementById("file-list");
+      const incoming = source === "incoming";
+      const listEl = document.getElementById(incoming ? "incoming-file-list" : "file-list");
+      const messageEl = incoming ? document.getElementById("incoming-message") : null;
+      if (messageEl) messageEl.hidden = true;
       listEl.innerHTML = "";
 
       if (data.parent_prefix !== null) {
         listEl.appendChild(
-          createRow("[DIR]", "..", () => loadDirectory(data.parent_prefix), null, null, { isParentNav: true })
+          createRow(
+            "[DIR]",
+            "..",
+            () => loadDirectory(data.parent_prefix, source),
+            null,
+            null,
+            { isParentNav: true }
+          )
         );
       }
 
       data.directories.forEach(dir => {
-        listEl.appendChild(createRow("[DIR]", dir.name, () => loadDirectory(dir.path)));
+        listEl.appendChild(createRow("[DIR]", dir.name, () => loadDirectory(dir.path, source)));
       });
 
       data.files.forEach(file => {
-        const downloadUrl = `/api/scans/${encodeURIComponent(file.id)}/download`;
+        const sourceQuery = `?source=${encodeURIComponent(source)}`;
+        const downloadUrl = `/api/scans/${encodeURIComponent(file.id)}/download${sourceQuery}`;
         const row = createRow("[IMG]", file.name, () => {
           // Immediately mark as loading so the user gets instant feedback
           document.querySelectorAll(".row").forEach(r => r.classList.remove("active", "loading"));
           row.classList.add("loading");
-          openImage(file.id, row);
+          openImage(file.id, row, source);
         }, downloadUrl, file.size);
         listEl.appendChild(row);
       });
 
-      filterRows();
+      filterRows(source);
+
+      if (incoming && data.files.length === 0 && data.directories.length === 0) {
+        const noResults = document.getElementById("incoming-no-results");
+        noResults.textContent = "No TIFF files found in this folder";
+        noResults.hidden = false;
+      }
     }
 
     /**
      * Builds clickable breadcrumb navigation from the server's current_path string.
      * e.g.  "/Patient_01/Scans" → [Home] / [Patient_01] / Scans
      */
-    function renderBreadcrumbs(currentPath) {
-      const header = document.getElementById("path-header");
+    function renderBreadcrumbs(currentPath, source = "scans") {
+      const header = document.getElementById(source === "incoming" ? "incoming-path-header" : "path-header");
       header.innerHTML = "";
 
       const nav = document.createElement("nav");
@@ -379,7 +437,7 @@
       homeSpan.className = "breadcrumb-item";
       homeSpan.textContent = "Home";
       homeSpan.title = "Navigate to root";
-      homeSpan.onclick = () => loadDirectory("");
+      homeSpan.onclick = () => loadDirectory("", source);
       nav.appendChild(homeSpan);
 
       // Decompose the path into segments
@@ -408,7 +466,7 @@
             crumb.className = "breadcrumb-item";
             crumb.textContent = seg;
             crumb.title = `Navigate to ${seg}`;
-            crumb.onclick = () => loadDirectory(prefix);
+            crumb.onclick = () => loadDirectory(prefix, source);
             nav.appendChild(crumb);
           }
         });
@@ -464,8 +522,9 @@
       return row;
     }
 
-    async function openImage(scanId, clickedRow = null) {
+    async function openImage(scanId, clickedRow = null, source = "scans") {
       currentScanId = scanId;
+      currentScanSource = source;
       if (pendingOpenHandler) {
         viewer.removeHandler("open", pendingOpenHandler);
         pendingOpenHandler = null;
@@ -477,8 +536,9 @@
       overlay.classList.add("visible");
 
       try {
-        const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info`);
-        if (currentScanId !== scanId) return;
+        const sourceQuery = `?source=${encodeURIComponent(source)}`;
+        const infoRes = await fetch(`/api/scans/${encodeURIComponent(scanId)}/info${sourceQuery}`);
+        if (currentScanId !== scanId || currentScanSource !== source) return;
         if (!infoRes.ok) {
           if (infoRes.status === 401) showLoginModal();
           const contentType = infoRes.headers.get("content-type") || "";
@@ -488,7 +548,7 @@
           throw new Error(detail || `Image metadata request failed (${infoRes.status}).`);
         }
         const info = await infoRes.json();
-        if (currentScanId !== scanId) return;
+        if (currentScanId !== scanId || currentScanSource !== source) return;
 
         // Update metadata panel content
         const metaPanel = document.getElementById("metadata-panel");
@@ -500,12 +560,13 @@
 
         const tileSource = {
           scanId,
+          sourceKey: `${source}:${scanId}`,
           height: info.height,
           width: info.width,
           tileSize: info.tile_size,
           maxLevel: info.osd_max_level,
           getTileUrl: function (level, x, y) {
-            return `/api/scans/${encodeURIComponent(scanId)}/tiles/${level}/${x}/${y}.jpg`;
+            return `/api/scans/${encodeURIComponent(scanId)}/tiles/${level}/${x}/${y}.jpg${sourceQuery}`;
           }
         };
 
@@ -513,7 +574,7 @@
         pendingOpenHandler = () => {
           viewer.removeHandler("open", pendingOpenHandler);
           pendingOpenHandler = null;
-          if (currentScanId !== scanId) return;
+          if (currentScanId !== scanId || currentScanSource !== source) return;
           overlay.classList.remove("visible");
           if (clickedRow) {
             clickedRow.classList.remove("loading");
@@ -524,13 +585,14 @@
 
         viewer.open(tileSource);
       } catch (err) {
-        if (currentScanId === scanId) showViewerError(err.message);
+        if (currentScanId === scanId && currentScanSource === source) showViewerError(err.message);
       }
     }
 
-    function filterRows() {
-      const query = document.getElementById("search-box").value.trim().toLowerCase();
-      const rows = document.querySelectorAll("#file-list .row");
+    function filterRows(source = "scans") {
+      const incoming = source === "incoming";
+      const query = document.getElementById(incoming ? "incoming-search-box" : "search-box").value.trim().toLowerCase();
+      const rows = document.querySelectorAll(`#${incoming ? "incoming-file-list" : "file-list"} .row`);
       let visibleCount = 0;
 
       rows.forEach(row => {
@@ -544,7 +606,11 @@
         if (matches) visibleCount++;
       });
 
-      document.getElementById("no-results").hidden = !(query !== "" && visibleCount === 0);
+      const noResults = document.getElementById(incoming ? "incoming-no-results" : "no-results");
+      noResults.hidden = !(query !== "" && visibleCount === 0);
+      if (incoming && query === "") {
+        noResults.textContent = "No matches in this folder";
+      }
     }
 
     const LASER_SCREEN_WIDTH = 4;
@@ -647,7 +713,7 @@
         const h = Math.round(selectionBox.h);
 
         const format = downloadFormat;
-        const downloadUrl = `/api/scans/${encodeURIComponent(currentScanId)}/crop`;
+        const downloadUrl = `/api/scans/${encodeURIComponent(currentScanId)}/crop?source=${encodeURIComponent(currentScanSource)}`;
 
         const margin = 50;
         const markings = strokes
@@ -843,6 +909,7 @@
       initDrawTool();
       initResizer();
       document.getElementById("search-box").addEventListener("input", filterRows);
+      document.getElementById("incoming-search-box").addEventListener("input", () => filterRows("incoming"));
       checkAuth();
     };
   </script>

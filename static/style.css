@@ -91,6 +91,27 @@ body {
   display: flex;
 }
 
+#incoming-panel:not([hidden]) {
+  display: flex;
+}
+
+.incoming-message {
+  margin-bottom: 10px;
+  padding: 9px;
+  border: 1px solid #7c4a18;
+  border-radius: 6px;
+  background: #2b2116;
+  color: #fbbf24;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.incoming-mount-note {
+  padding: 8px 2px 2px;
+  color: #8b949e;
+  font-size: 11px;
+}
+
 .processing-panel {
   display: flex;
   gap: 16px;
@@ -247,7 +268,8 @@ body {
   padding-bottom: 8px;
 }
 
-#search-box {
+#search-box,
+#incoming-search-box {
   width: 100%;
   padding: 6px 8px;
   background-color: #1e2333;
@@ -257,10 +279,12 @@ body {
   font-family: inherit;
   font-size: 13px;
 }
-#search-box::placeholder {
+#search-box::placeholder,
+#incoming-search-box::placeholder {
   color: #6b7280;
 }
-#search-box:focus {
+#search-box:focus,
+#incoming-search-box:focus {
   outline: none;
   border-color: #38bdf8;
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);

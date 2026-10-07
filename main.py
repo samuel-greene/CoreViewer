@@ -10,7 +10,7 @@ import secrets
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import FileResponse
@@ -176,6 +176,9 @@ def _resolve_mount_dir() -> Path:
     return local_scans.resolve()
 
 MOUNT_DIR = _resolve_mount_dir()
+INCOMING_SCANS_DIR = Path(
+    os.environ.get("INCOMING_SCANS_DIR") or "/mnt/incoming-scans"
+).resolve()
 
 app = FastAPI(title="OME-TIFF Viewer")
 
@@ -231,46 +234,75 @@ def get_me(user: dict = Depends(get_current_user)):
 
 # --- PROTECTED SCAN ENDPOINTS ---
 
-def get_local_scan_path(scan_id: str, user: dict) -> Path:
-    file_path = (MOUNT_DIR / scan_id).resolve()
-    if not str(file_path).startswith(str(MOUNT_DIR)):
-        raise HTTPException(status_code=403, detail="Invalid path request")
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Scan not found")
-    
-    # Future permission check logic:
-    # if "*" not in user["allowed_paths"] and not any(scan_id.startswith(p) for p in user["allowed_paths"]):
-    #     raise HTTPException(status_code=403, detail="Access denied to this file")
-        
+def _scan_root(source: Literal["scans", "incoming"]) -> Path:
+    if source == "incoming":
+        if not INCOMING_SCANS_DIR.is_dir():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Incoming scans share is not mounted. Mount the Azure Files "
+                    "share at INCOMING_SCANS_DIR."
+                ),
+            )
+        return INCOMING_SCANS_DIR
+    return MOUNT_DIR
+
+
+def _resolve_scan_path(root: Path, scan_id: str, invalid_detail: str) -> Path:
+    file_path = (root / scan_id).resolve()
+    try:
+        file_path.relative_to(root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail=invalid_detail) from None
     return file_path
 
 
-@app.get("/api/scans")
-def list_scans(prefix: str = "", user: dict = Depends(get_current_user)) -> dict[str, object]:
+def get_local_scan_path(
+    scan_id: str,
+    user: dict,
+    source: Literal["scans", "incoming"] = "scans",
+) -> Path:
+    root = _scan_root(source)
+    file_path = _resolve_scan_path(root, scan_id, "Invalid path request")
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    # Future permission check logic:
+    # if "*" not in user["allowed_paths"] and not any(scan_id.startswith(p) for p in user["allowed_paths"]):
+    #     raise HTTPException(status_code=403, detail="Access denied to this file")
+
+    return file_path
+
+
+def _list_scans_in_directory(root: Path, prefix: str) -> dict[str, object]:
+    root = root.resolve()
     if prefix and not prefix.endswith("/"):
         prefix += "/"
 
     directories, files = [], []
-    target_dir = (MOUNT_DIR / prefix).resolve()
-    
-    if not str(target_dir).startswith(str(MOUNT_DIR)):
-        raise HTTPException(status_code=403, detail="Invalid directory request")
+    target_dir = _resolve_scan_path(root, prefix, "Invalid directory request")
+    if not target_dir.exists() or not target_dir.is_dir():
+        return {
+            "current_path": f"/{prefix}",
+            "parent_prefix": None,
+            "directories": [],
+            "files": [],
+        }
 
     try:
-        if target_dir.exists() and target_dir.is_dir():
-            for item_name in os.listdir(target_dir):
-                item_path = target_dir / item_name
-                if item_path.is_dir():
-                    directories.append({"name": item_name, "path": f"{prefix}{item_name}/"})
-                elif item_path.is_file() and item_name.lower().endswith((".tif", ".tiff")):
-                    files.append({
-                        "id": f"{prefix}{item_name}",
-                        "name": item_name,
-                        "size": item_path.stat().st_size,
-                    })
-    except Exception as e:
-        logger.error("Failed to list files: %s", e)
-        raise HTTPException(status_code=500, detail="Could not retrieve scans")
+        for item_name in os.listdir(target_dir):
+            item_path = target_dir / item_name
+            if item_path.is_dir():
+                directories.append({"name": item_name, "path": f"{prefix}{item_name}/"})
+            elif item_path.is_file() and item_name.lower().endswith((".tif", ".tiff")):
+                files.append({
+                    "id": f"{prefix}{item_name}",
+                    "name": item_name,
+                    "size": item_path.stat().st_size,
+                })
+    except OSError as exc:
+        logger.error("Failed to list files in %s: %s", target_dir, exc)
+        raise HTTPException(status_code=500, detail="Could not retrieve scans") from exc
 
     parent_prefix = None
     if prefix:
@@ -283,6 +315,15 @@ def list_scans(prefix: str = "", user: dict = Depends(get_current_user)) -> dict
         "directories": sorted(directories, key=lambda d: d["name"].lower()),
         "files": sorted(files, key=lambda f: f["name"].lower()),
     }
+
+
+@app.get("/api/scans")
+def list_scans(
+    prefix: str = "",
+    source: Literal["scans", "incoming"] = "scans",
+    user: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    return _list_scans_in_directory(_scan_root(source), prefix)
 
 
 @lru_cache(maxsize=512)
@@ -361,8 +402,12 @@ def _companion_metadata_summary(image_path: Path) -> str:
 
 
 @app.get("/api/scans/{scan_id:path}/info")
-def scan_info(scan_id: str, user: dict = Depends(get_current_user)) -> dict[str, object]:
-    local_path = get_local_scan_path(scan_id, user)
+def scan_info(
+    scan_id: str,
+    source: Literal["scans", "incoming"] = "scans",
+    user: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    local_path = get_local_scan_path(scan_id, user, source)
     try:
         info = get_scan_info(str(local_path))
         info["companion_metadata_summary"] = _companion_metadata_summary(local_path)
@@ -372,8 +417,15 @@ def scan_info(scan_id: str, user: dict = Depends(get_current_user)) -> dict[str,
 
 
 @app.get("/api/scans/{scan_id:path}/tiles/{level}/{x}/{y}.jpg")
-def tile(scan_id: str, level: int, x: int, y: int, user: dict = Depends(get_current_user)) -> Response:
-    local_path = get_local_scan_path(scan_id, user)
+def tile(
+    scan_id: str,
+    level: int,
+    x: int,
+    y: int,
+    source: Literal["scans", "incoming"] = "scans",
+    user: dict = Depends(get_current_user),
+) -> Response:
+    local_path = get_local_scan_path(scan_id, user, source)
     try:
         jpeg = render_tile_cached(scan_id, level, x, y, str(local_path))
         return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400, immutable"})
@@ -384,8 +436,12 @@ def tile(scan_id: str, level: int, x: int, y: int, user: dict = Depends(get_curr
 
 
 @app.get("/api/scans/{scan_id:path}/download")
-def download_scan(scan_id: str, user: dict = Depends(get_current_user)) -> FileResponse:
-    local_path = get_local_scan_path(scan_id, user)
+def download_scan(
+    scan_id: str,
+    source: Literal["scans", "incoming"] = "scans",
+    user: dict = Depends(get_current_user),
+) -> FileResponse:
+    local_path = get_local_scan_path(scan_id, user, source)
     return FileResponse(path=local_path, filename=local_path.name, media_type="image/tiff")
 
 
@@ -403,8 +459,13 @@ class CropRequest(BaseModel):
 
 
 @app.post("/api/scans/{scan_id:path}/crop")
-def download_crop(scan_id: str, body: CropRequest, user: dict = Depends(get_current_user)) -> Response:
-    local_path = get_local_scan_path(scan_id, user)
+def download_crop(
+    scan_id: str,
+    body: CropRequest,
+    source: Literal["scans", "incoming"] = "scans",
+    user: dict = Depends(get_current_user),
+) -> Response:
+    local_path = get_local_scan_path(scan_id, user, source)
     x, y, w, h, format = body.x, body.y, body.w, body.h, body.format
     try:
         markings = [{"points": stroke.points, "width": stroke.width} for stroke in body.markings]
