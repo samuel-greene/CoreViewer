@@ -137,6 +137,7 @@
         </div>
       </div>
       <button id="btn-clear" class="toolbar-btn">Clear</button>
+      <button id="btn-metadata-toggle" class="toolbar-btn">Hide Metadata</button>
     </div>
   </div>
 
@@ -638,6 +639,7 @@
       const btnDraw = document.getElementById('btn-draw');
       const btnSelect = document.getElementById('btn-select');
       const btnClear = document.getElementById('btn-clear');
+      const btnMetadataToggle = document.getElementById('btn-metadata-toggle')
 
       const downloadWrap = document.getElementById('download-selection-wrap');
       const btnDownloadSel = document.getElementById('btn-download-selection');
@@ -761,6 +763,14 @@
         closeFormatMenu();
         redraw();
       };
+      
+      const metaPanel = document.getElementById("metadata-panel");
+      let showMetadata = false;
+      btnMetadataToggle.onclick = () => {
+        showMetadata = !showMetadata
+        metaPanel.hidden = showMetadata
+        btnMetadataToggle.classList.toggle('active', showMetadata === true)
+      }
 
       let isMouseDown = false;
       let currentStroke = null;

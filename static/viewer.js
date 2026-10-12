@@ -40,24 +40,6 @@ async function openScan(scanId) {
   try {
     const info = await requestJson(`/api/scans/${encodeURIComponent(scanId)}/info`);
 
-    // Ensure the metadata panel exists in the bottom left
-    let metaPanel = document.getElementById("metadata-panel");
-    if (!metaPanel) {
-      metaPanel = document.createElement("div");
-      metaPanel.id = "metadata-panel";
-      metaPanel.style.position = "absolute";
-      metaPanel.style.bottom = "15px";
-      metaPanel.style.left = "15px";
-      metaPanel.style.zIndex = "100";
-      metaPanel.style.color = "rgba(156, 163, 175, 0.7)"; // Gray, slightly transparent
-      metaPanel.style.pointerEvents = "none"; // Prevent blocking viewer interactions
-      metaPanel.style.fontSize = "13px";
-      metaPanel.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.5)"; // Prevent washout on white backgrounds
-      metaPanel.style.whiteSpace = "pre-wrap";
-      document.querySelector("#viewer").appendChild(metaPanel);
-    }
-    metaPanel.textContent = info.metadata_summary || "";
-
     // OpenSeadragon uses Deep Zoom levels: maxLevel is full resolution and each
     // preceding level is half-sized. The backend maps each requested Deep Zoom
     // level to the closest suitable native TIFF page/SUBIFD.
