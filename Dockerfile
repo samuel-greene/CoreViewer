@@ -21,6 +21,12 @@ RUN python -m pip install -r requirements.txt
 WORKDIR /app
 COPY . /app
 
+# Persist the image creation time for the login screen. CI may provide an
+# explicit UTC value with --build-arg BUILD_TIMESTAMP=... for reproducibility.
+ARG BUILD_TIMESTAMP
+RUN build_timestamp="${BUILD_TIMESTAMP:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}" \
+    && printf '{"created_at":"%s","source":"container"}\n' "$build_timestamp" > /app/.build-info.json
+
 # Run the codec and authentication regression tests in the shipped runtime.
 RUN python -m unittest discover -s tests
 

@@ -31,6 +31,7 @@
       </form>
       <button type="button" id="guest-login-btn" class="login-btn">Continue as Guest</button>
     </div>
+    <p id="build-timestamp" class="build-timestamp" hidden></p>
   </div>
 
   <div id="sidebar">
@@ -915,10 +916,28 @@
       initViewer();
       initDrawTool();
       initResizer();
+      loadBuildTimestamp();
       document.getElementById("search-box").addEventListener("input", filterRows);
       document.getElementById("incoming-search-box").addEventListener("input", filterIncomingFolders);
       checkAuth();
     };
+
+    async function loadBuildTimestamp() {
+      const timestamp = document.getElementById("build-timestamp");
+      try {
+        const response = await fetch("/api/build-info");
+        if (!response.ok) return;
+        const info = await response.json();
+        const createdAt = new Date(info.created_at);
+        if (Number.isNaN(createdAt.getTime())) return;
+
+        const label = info.source === "container" ? "Build" : "Dev session";
+        timestamp.textContent = `${label} · ${createdAt.toLocaleString()}`;
+        timestamp.hidden = false;
+      } catch (_) {
+        // The timestamp is a development aid; leaving it hidden is intentional.
+      }
+    }
   </script>
   <script src="processing.js"></script>
 </body>
