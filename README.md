@@ -1,121 +1,146 @@
-# Minimal OME-TIFF viewer
+# CoreView Online Viewer
 
-A small FastAPI and OpenSeadragon proof of concept for browsing large pyramidal TIFF/OME-TIFF scans. Tiles are cropped lazily by libvips and returned as JPEG; the complete full-resolution image is not loaded into a Python array.
+CoreView Online Viewer is a web workspace for browsing large microscopy scans and managing their conversion to OME-TIFF. It is built for high-resolution TIFF and OME-TIFF data that is impractical to load in full in a browser: the application reads only the requested image regions and serves them as viewable tiles.
 
-## Install
+The viewer combines a FastAPI service, libvips image processing, and OpenSeadragon navigation with an operator workflow for submitting completed acquisition folders, tracking conversion jobs, and opening results from one place.
 
-Python 3.10 or newer is recommended. `pyvips` is a Python binding and also needs the native **libvips** runtime:
+## Product capabilities
 
-- **Windows:** download the full `vips-dev-x64-all-*.zip` package (or the `all` package for your architecture) from the [Windows libvips releases](https://github.com/libvips/build-win64-mxe/releases), extract it, and add its `bin` directory to `PATH`. Restart VS Code/your terminal afterward. Use the full package, rather than `web` packages or `pyvips[binary]`, for libvips-native JPEG 2000 TIFF variants.
-- **Ubuntu/Debian:** `sudo apt install libvips42` (use `libvips-dev` too only when a source build needs headers).
-- **macOS:** `brew install vips`.
+- Browse TIFF and OME-TIFF files in a mounted scan library, including nested folders.
+- Pan and zoom large pyramidal scans with on-demand JPEG tiles; no full-resolution browser download is required.
+- Inspect embedded OME metadata and companion `plan.json` / `ome-manifest.json` summaries alongside each scan.
+- Use temporary laser-pointer annotations, select a rectangular region, and export it as JPEG or TIFF.
+- Download the original TIFF when needed.
+- Submit completed TIFF or JP2 acquisition folders for OME-TIFF generation.
+- Track queued, running, completed, and failed conversion jobs; retry failures and open completed results.
+- Optionally generate a CycleGAN virtual H&E OME-TIFF when the generator reports a configured GPU worker and model.
+- Provide controlled access to scan viewing and conversion workflows.
+- Run locally or in Azure Container Apps with separate incoming and output Azure Files mounts.
 
-From this directory, create/activate a virtual environment and install the Python packages:
+## Architecture
 
-    python -m venv .venv
-    .venv\Scripts\activate        # Windows PowerShell
-    python -m pip install -r requirements.txt
+```text
+Browser (OpenSeadragon)
+        │ application requests
+        ▼
+CoreView Online Viewer ──► mounted output scan library
+        │                         │
+        │ private job API          └─ on-demand TIFF region reads via libvips
+        ▼
+OME-TIFF generator ──────► mounted output scan library
+        ▲
+        │ selected folder names only
+mounted incoming scan library
+```
 
-On Linux/macOS, activation is `source .venv/bin/activate`.
+The browser does not upload image bytes for conversion. The viewer validates each selected folder against the incoming mount and sends only its path and the requesting identity to the private generator service.
 
-## JPEG 2000-compressed OME-TIFF
+## Quick start
 
-Standard JPEG 2000 TIFF compression tag 34712 is decoded with `tifffile` and `imagecodecs`: only the tiles or strips intersecting a requested region are read. The decoder supports 8/16-bit grayscale and RGB, contiguous samples, and top-left orientation. Unsupported layouts and damaged segments return explicit errors.
+### Prerequisites
 
-Bio-Formats/Aperio JPEG 2000 TIFF tags handled natively by libvips still require a native build with OpenJPEG support. Installing OpenJPEG alongside a libvips build compiled without that support does not enable it. Standalone `.jp2` files are not supported for direct viewing; the Incoming tab can submit JP2 scan folders for conversion to OME-TIFF.
+- Python 3.10 or newer
+- Native [libvips](https://www.libvips.org/) runtime
 
-Verify the actual runtime before using it:
+Install libvips for your platform:
 
-    python -m unittest discover -s tests
+- macOS: `brew install vips`
+- Ubuntu/Debian: `sudo apt install libvips42`
+- Windows: install the full `vips-dev-x64-all-*.zip` package from the [libvips Windows releases](https://github.com/libvips/build-win64-mxe/releases), then add its `bin` directory to `PATH`. The full package is needed for libvips-native JPEG 2000 TIFF variants.
 
-These tests use a small independently encoded JPEG 2000 OME-TIFF fixture, check its pyramid, and verify nonblank tiles at every zoom level and full-resolution pixel values. They cover both standard tag 34712 and native Bio-Formats tag 33004, 16-bit pixels, region-only segment reads, DEFLATE TIFFs, and decoder failures. No test-only dependencies are required. The Docker build runs the same tests and fails if decoding is incompatible.
+From the repository root, create a virtual environment and install dependencies:
 
-TIFF reads use `fail_on="warning"` so unsupported compression raises an error instead of silently returning black pixels. The viewer displays metadata and tile-load failures. This stricter behavior also rejects damaged TIFFs that libvips would otherwise partially recover.
+```bash
+python3 -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS/Linux
+source .venv/bin/activate
 
-Other vendor compression variants and OME layouts still need representative-file testing.
+python -m pip install -r requirements.txt
+```
 
-## Run
+Place pyramidal `.tif` or `.tiff` files in [`scans/`](scans/README.md), then start the service:
 
-1. Copy a pyramidal `.tif` or `.tiff` file into `scans/`.
-2. From the `viewer/` directory run `uvicorn main:app --reload`.
-3. Open <http://127.0.0.1:8000>.
+```bash
+uvicorn main:app --reload
+```
 
-The bottom-left metadata panel shows useful embedded OME-TIFF fields and, when present, scan, acquisition, specimen, and pixel-size summaries from `plan.json` and `ome-manifest.json` beside the image.
+Open <http://127.0.0.1:8000>.
 
-The sidebar's **Incoming** tab is a folder selector for manual OME-TIFF
-conversion. It lists folders, checks for exactly one TIFF or JP2 plus `plan.json` and
-`ome-manifest.json`, and allows selecting multiple completed scan folders.
-It does not open incoming images or offer incoming image downloads.
-Mount `incoming-scans` read-only at `/mnt/incoming-scans`, or set
-`INCOMING_SCANS_DIR` to the actual mount path. An absent mount returns a clear
-unavailable message. Only submit folders after the uploader finishes.
+## Deployment configuration
 
-**Processing** now shows persisted OME conversion jobs, real stage names,
-elapsed time, errors, manual retry, and an Open result button. It refreshes
-status every three seconds while an authorized viewer page is visible.
-Conversions continue when the browser tab closes. GPU inference is not part
-of this change.
+The viewer discovers its output scan library in this order: `IMAGES_DIR`, `/mnt/images`, then the local `scans/` directory. In Azure, the viewer and generator must mount the same output share, although their mount paths may differ.
 
-Configure backend environment variables:
+| Variable | Purpose | Local default |
+| --- | --- | --- |
+| `IMAGES_DIR` | Directory containing viewable TIFF/OME-TIFF output. | `scans/` when `/mnt/images` is absent |
+| `INCOMING_SCANS_DIR` | Read-only directory containing acquisition folders for conversion. | `/mnt/incoming-scans` |
+| `OME_GENERATOR_URL` | Internal base URL of the compatible OME-TIFF generator job API. | Not configured |
 
-- `OME_GENERATOR_URL=http://ome-generator` for the generator in the same
-  Container Apps environment, using internal HTTP ingress on port 8000.
-- `IMAGES_DIR`: a mount of the **same output share** the generator writes.
-  Returned output paths are relative to that share; mount paths can differ.
+Keep the generator on private Container Apps ingress. The generator must expose the matching manual job API. See the [generator deployment guide](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/azure-deployment.md) for coordinated deployment details.
 
-The generator connection uses internal ingress without a shared API key. Keep
-the generator ingress private to the Container Apps environment. The viewer
-forwards only folder names and the authenticated operator identity; no image
-bytes pass through the browser. Accounts with role `admin` or `processor` can
-submit and track conversions. Guests can also submit, retry and view job
-history for now: `ALLOW_GUEST_PROCESSING` defaults to `true`. Set it to `false`
-in the viewer's Azure environment settings to disable guest processing without
-editing code. The browser uses the server's permission response. Other viewer
-accounts remain limited to image viewing, and guest viewing still works when
-guest processing is disabled.
+## Conversion workflow
 
-The generator must run the matching manual API version. For coordinated
-cutover instructions, see [generator deployment](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/azure-deployment.md).
-The old automatic watcher revisions must be deactivated during cutover.
+1. Mount the incoming scan share at `INCOMING_SCANS_DIR`.
+2. Upload a completed acquisition folder. It is eligible when it contains exactly one TIFF or JP2 file plus `plan.json` and `ome-manifest.json`.
+3. In **Incoming**, select one or more eligible folders and choose either **Generate OME-TIFF** or, when available, **Generate virtual H&E**.
+4. Follow the job in **Processing**. Jobs continue after the browser closes, and the page refreshes the job state while it is in use.
+5. Use **Open result** after successful completion to open the generated scan from the output library.
 
-The workspace launch configuration **OME-TIFF Viewer (Uvicorn)** starts the same command under the Python debugger, so breakpoints in `main.py` and `tile_service.py` work normally.
+The Incoming tab intentionally does not open or download source images. Submit folders only after uploads finish.
 
-## Files
+### Optional virtual H&E
 
-- `main.py` defines the API, validates scan names, returns HTTP errors, and serves `static/`.
-- `tile_service.py` contains TIFF pyramid discovery, Deep Zoom coordinate mapping, region cropping, resizing, and JPEG encoding.
-- `static/index.html`, `viewer.js`, and `styles.css` provide the dependency-free OpenSeadragon interface.
-- `scans/` is the local scan directory.
-- `requirements.txt` contains FastAPI, Uvicorn, pyvips, and the region-level JPEG 2000 TIFF decoder dependencies.
+The CycleGAN virtual H&E option is shown only when the generator reports an available GPU worker and model. It creates a separate OME-TIFF and preserves the requested operation and input identity when a job is retried. Conventional OME-TIFF export remains available without GPU inference.
 
-## Pyramid and OpenSeadragon level mapping
+Deploy the matching generator revision and complete its [GPU and model setup](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/cyclegan-inference.md) before enabling this workflow.
 
-OpenSeadragon uses Deep Zoom level numbers. Its maximum level is the full-resolution image; every lower level is approximately half the width and height. These level numbers are API coordinates, not TIFF page numbers.
+## TIFF handling and performance
 
-For every tile request, the backend computes that Deep Zoom level's dimensions, chooses the smallest stored TIFF level that is still at least that detailed, maps the tile rectangle into that stored level, crops only that region, and downsamples it to the requested tile size. Right and bottom edge tiles retain their smaller dimensions.
+CoreView maps each Deep Zoom request to the most appropriate native TIFF pyramid level, crops only the needed source region, resizes it to the requested tile, and returns JPEG to the viewer. It first detects libvips-exposed SubIFD pyramid layers, then falls back to a compatible top-level TIFF page chain. This avoids mistaking equal-sized OME Z/C/T pages for zoom levels.
 
-libvips exposes Bio-Formats-style pyramid layers through the TIFF loader's `subifd` option and commonly reports their count as `n-subifds`. The service checks those first. If none are found, it checks the top-level page chain used by classic pyramidal TIFFs. A page is accepted only when its dimensions decrease and its aspect ratio matches the base image, so equal-sized OME Z/C/T pages are not mistaken for zoom levels.
+Standard JPEG 2000 TIFF compression (tag 34712) is decoded region-by-region with `tifffile` and `imagecodecs`. Bio-Formats/Aperio-style JPEG 2000 TIFF tags supported by the installed libvips build are handled through libvips. Reads are strict: unsupported layouts or damaged segments return explicit errors rather than silent blank imagery.
 
-## Current limitations
+Tiled pyramidal TIFFs provide the best experience. Non-pyramidal images are still viewable but may be slower at low zoom because they must be downsampled from the full-resolution page.
 
-- Guest Login currently bypasses credential checks and grants access to scans; do not expose it in production.
-- This first version displays the first TIFF/OME image plane only; it does not yet select OME series, Z, C, or T dimensions.
-- Some vendor TIFF layouts mix scenes, planes, associated images, and pyramid levels in ways libvips cannot identify unambiguously. Discovery therefore stops at the first dimension mismatch rather than guessing.
-- Non-pyramidal TIFFs work, but low-zoom tiles must be downsampled from the full-resolution page and can be slower. Tiled pyramidal TIFFs give the intended region-read performance.
-- 16-bit integer pixels are shifted to 8-bit for JPEG without whole-image intensity analysis. Fluorescence scans may therefore need explicit window/level controls in a later version.
-- JPEG cannot preserve more than three channels or alpha; this proof of concept uses grayscale or the first three visible bands.
+## Deployment notes
 
-## Optional CycleGAN virtual H&E
+Keep the incoming share read-only to the viewer and the generator ingress private. Apply your organization’s standard access controls and secret-management practices to the deployed service and its storage mounts.
 
-Incoming offers conventional OME-TIFF export and, when the generator reports
-the configured GPU worker and model available, **CycleGAN virtual H&E**. The
-default checkpoint is shown with the processing choice. Inference creates a
-separate OME-TIFF; Processing reports startup, model loading, block counts,
-writing, validation and Open result. Retry keeps the inference operation and
-model/input identity. Guest access uses the existing `ALLOW_GUEST_PROCESSING`
-setting.
+## Supported formats and current boundaries
 
-Deploy the corresponding generator change and complete its
-[GPU/model setup](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/cyclegan-inference.md)
-before using this option. Existing generator versions and unconfigured workers
-continue to support conventional OME export.
+- TIFF and OME-TIFF files with 8- or 16-bit grayscale or RGB data and top-left orientation are supported by the JPEG 2000 region decoder.
+- The viewer displays the first TIFF/OME image plane. Series and OME Z/C/T selection are not yet available.
+- Some vendor files mix scenes, planes, associated images, and pyramid levels in ways that cannot be identified reliably. Pyramid discovery stops on a dimension mismatch rather than guessing.
+- 16-bit data is converted to 8-bit for JPEG tiles without whole-image intensity analysis. Fluorescence workflows may need future window/level controls.
+- JPEG exports preserve grayscale or the first three visible bands; alpha and more than three channels are not preserved.
+- Standalone `.jp2` files are not viewed directly; they may be submitted in completed incoming folders for conversion. Other vendor-specific compression layouts require representative-file validation.
+
+## Verification and container image
+
+Run the test suite with:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+The test suite covers incoming-folder validation, JP2 intake, conversion-job proxying, inference submission and retry identity, TIFF pyramid discovery, JPEG 2000 and DEFLATE decoding, region-only reads, 16-bit tiles, metadata summaries, and decoder error propagation. The `Dockerfile` installs libvips and runs these tests during image build, so a codec-incompatible build fails before deployment.
+
+Build and run the container locally:
+
+```bash
+docker build -t coreview-online-viewer .
+docker run --rm -p 8000:8000 -v "$(pwd)/scans:/mnt/images:ro" coreview-online-viewer
+```
+
+## Repository guide
+
+| Path | Responsibility |
+| --- | --- |
+| [`main.py`](main.py) | FastAPI application, scan and processing APIs, metadata summaries, and export endpoints. |
+| [`tile_service.py`](tile_service.py) | TIFF pyramid discovery, Deep Zoom mapping, region reads, rendering, annotations, and crop encoding. |
+| [`static/`](static/) | Browser interface, scan browser, processing UI, and OpenSeadragon integration. |
+| [`scans/`](scans/README.md) | Local development scan library; large scan files should not be committed. |
+| [`tests/`](tests/) | Processing and codec regression coverage. |
+| [`scripts/`](scripts/) | Imaging-support utilities. |
