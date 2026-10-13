@@ -571,6 +571,16 @@ body.resizing #viewer-container {
   justify-content: center;
 }
 
+.build-timestamp {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  margin: 0;
+  color: rgba(156, 163, 175, 0.5);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+
 .login-card {
   background-color: #1d1f20;
   border: 1px solid #374151;

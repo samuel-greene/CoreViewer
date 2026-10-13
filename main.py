@@ -9,6 +9,7 @@ import re
 import secrets
 import time
 import httpx
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
@@ -28,6 +29,26 @@ from tile_service import (
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+BUILD_INFO_PATH = BASE_DIR / ".build-info.json"
+
+
+def _load_build_info() -> dict[str, str]:
+    """Return container build metadata or a clear local-development fallback."""
+    try:
+        info = json.loads(BUILD_INFO_PATH.read_text(encoding="utf-8"))
+        created_at = info.get("created_at")
+        if isinstance(created_at, str) and created_at:
+            return {"created_at": created_at, "source": "container"}
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    return {
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": "development",
+    }
+
+
+BUILD_INFO = _load_build_info()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -244,6 +265,12 @@ def logout(response: Response):
 @app.get("/api/auth/me")
 def get_me(user: dict = Depends(get_current_user)):
     return session_info(user)
+
+
+@app.get("/api/build-info")
+def build_info() -> dict[str, str]:
+    """Expose non-sensitive build metadata for the pre-login UI."""
+    return BUILD_INFO
 
 
 # --- PROTECTED SCAN ENDPOINTS ---
