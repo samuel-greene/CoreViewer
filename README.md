@@ -7,6 +7,7 @@ The viewer combines a FastAPI service, libvips image processing, and OpenSeadrag
 ## Product capabilities
 
 - Browse TIFF and OME-TIFF files in a mounted scan library, including nested folders.
+- Search a PostgreSQL-backed image catalog by filename, specimen ID, plan ID, and administrator tags; filter by UTC date, uploader, and verification status.
 - Pan and zoom large pyramidal scans with on-demand JPEG tiles; no full-resolution browser download is required.
 - Inspect embedded OME metadata and companion `plan.json` / `ome-manifest.json` summaries alongside each scan.
 - Use temporary laser-pointer annotations, select a rectangular region, and export it as JPEG or TIFF.
@@ -21,19 +22,21 @@ The viewer combines a FastAPI service, libvips image processing, and OpenSeadrag
 
 ```text
 Browser (OpenSeadragon)
-        │ application requests
+        │
         ▼
-CoreView Online Viewer ──► mounted output scan library
-        │                         │
-        │ private job API          └─ on-demand TIFF region reads via libvips
-        ▼
-OME-TIFF generator ──────► mounted output scan library
+CoreView Online Viewer ──► PostgreSQL catalog
+        │                       ▲
+        │ on-demand tiles       │ indexed metadata
+        ▼                       │
+mounted output scan library ─► catalog worker
         ▲
-        │ selected folder names only
-mounted incoming scan library
+        │ generated images
+OME-TIFF generator ◄── Viewer job requests ◄── mounted incoming scan library
 ```
 
 The browser does not upload image bytes for conversion. The viewer validates each selected folder against the incoming mount and sends only its path and the requesting identity to the private generator service.
+
+The catalog stores paths, extracted metadata, administrator corrections, tags, provenance, and review history. Image bytes stay on Azure Files. Search results are text rows; no previews or thumbnails are stored or displayed. The existing viewer still renders tiles on demand after an image is opened.
 
 ## Quick start
 
@@ -77,8 +80,31 @@ The viewer discovers its output scan library in this order: `IMAGES_DIR`, `/mnt/
 | `IMAGES_DIR` | Directory containing viewable TIFF/OME-TIFF output. | `scans/` when `/mnt/images` is absent |
 | `INCOMING_SCANS_DIR` | Read-only directory containing acquisition folders for conversion. | `/mnt/incoming-scans` |
 | `OME_GENERATOR_URL` | Internal base URL of the compatible OME-TIFF generator job API. | Not configured |
+| `DATABASE_URL` | SQLAlchemy URL for the catalog. Azure PostgreSQL connections require verified TLS and a readable CA bundle. | Not configured; folder browser remains available |
+| `CATALOG_DEFAULT` | Make catalog search the default library interface after backfill validation. | `false` |
+| `CATALOG_LEGACY_BROWSER` | Keep an admin-only Folders tab during catalog rollout; set `false` to retire it. | `true` |
+| `CATALOG_SCAN_INTERVAL` | Seconds between completed-image share scans in the separate worker. | `180` |
 
 Keep the generator on private Container Apps ingress. The generator must expose the matching manual job API. See the [generator deployment guide](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/azure-deployment.md) for coordinated deployment details.
+
+## Catalog setup and rollout
+
+The catalog is optional until it is initialized. For local development, set `DATABASE_URL=sqlite:///./catalog-local.db`. Production uses Azure Database for PostgreSQL Flexible Server; keep the database URL in a secret and use a private connection or your organization's approved network controls. Give the worker and viewer the same output-share mount, but run **one** worker process independently of the web replicas.
+
+Run these commands in the application image with `DATABASE_URL` and `IMAGES_DIR` set:
+
+```bash
+python -m scripts.catalog_worker init
+python -m scripts.catalog_worker once
+python -m scripts.catalog_worker validate
+python -m scripts.catalog_worker status
+```
+
+`validate` compares currently present TIFF paths with non-missing catalog records and reports samples of discrepancies and metadata errors. Resolve discrepancies and inspect representative image records before setting `CATALOG_DEFAULT=true`. While it is false, administrators can inspect the Library tab and all users retain the folder browser. After the switch, ordinary users enter Library; administrators retain Folders as a rollout fallback. Set `CATALOG_LEGACY_BROWSER=false` after the transition to retire folder navigation. A database outage produces an explicit catalog error, not an empty result set.
+
+After initial validation, run one long-lived worker using the same container image with the command `python -m scripts.catalog_worker watch`. It rescans the completed-image share every three minutes by default. New files settle for 60 seconds before indexing. Failed directory walks do not mark files missing; a file is marked missing only after two complete scans at least 24 hours apart. An empty share with existing catalog records is treated as a scan failure. A confidently recognized rename retains the record; uncertain replacements receive a new unverified record. Incoming acquisition folders are not indexed.
+
+Every indexed image starts unverified. Administrators can correct specimen ID, plan ID, acquisition time, and free-form tags without modifying the TIFF or companion files. Original extracted fields and edit history remain in the record. Material source changes or corrections move a verified record to needs review. Authenticated generator submissions can identify an uploader only when a recorded job ID maps to a completed output path; guest or ambiguous jobs remain unknown. Ownership is nullable and not enforced in this release. All existing accounts, including guest, can search the same catalog. Before enabling private ownership in a future release, enforce it across search, info, tiles, downloads, crops, and legacy browsing routes.
 
 ## Conversion workflow
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>OME-TIFF Viewer</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=catalog-3">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
 </head>
 <body>
@@ -42,12 +42,21 @@
     <div class="sidebar-tabs" role="tablist" aria-label="Sidebar views">
       <button
         type="button"
+        id="catalog-tab"
+        class="sidebar-tab"
+        role="tab"
+        aria-selected="false"
+        aria-controls="catalog-panel"
+        hidden
+      >Library</button>
+      <button
+        type="button"
         id="files-tab"
         class="sidebar-tab active"
         role="tab"
         aria-selected="true"
         aria-controls="files-panel"
-      >Files</button>
+      >Folders</button>
       <button
         type="button"
         id="incoming-tab"
@@ -65,6 +74,47 @@
         aria-controls="processing-panel"
       >Processing <span class="processing-count">0</span></button>
     </div>
+
+    <section id="catalog-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="catalog-tab" hidden>
+      <form id="catalog-search-form" class="catalog-search-form">
+        <label for="catalog-query">Search images</label>
+        <input id="catalog-query" type="search" autocomplete="off" placeholder="Filename, specimen, plan, tag" maxlength="200" />
+        <div class="catalog-date-fields">
+          <label>From (UTC)<input id="catalog-from" type="date" /></label>
+          <label>Through (UTC)<input id="catalog-through" type="date" /></label>
+        </div>
+        <div class="catalog-filter-fields">
+          <label>Status
+            <select id="catalog-verification">
+              <option value="">All statuses</option>
+              <option value="unverified">Unverified</option>
+              <option value="needs_review">Needs review</option>
+              <option value="verified">Verified</option>
+            </select>
+          </label>
+          <label>Uploader
+            <select id="catalog-uploader"><option value="">All uploaders</option><option value="unknown">Unknown</option></select>
+          </label>
+        </div>
+        <div class="catalog-actions">
+          <button type="submit" class="conversion-primary">Search</button>
+          <button id="catalog-reset" type="button" class="conversion-secondary">Reset</button>
+        </div>
+      </form>
+      <div id="catalog-message" class="catalog-message" role="status"></div>
+      <div id="catalog-results" class="catalog-results" aria-live="polite"></div>
+      <div class="catalog-pagination">
+        <button id="catalog-prev" type="button" class="conversion-secondary" disabled>Previous</button>
+        <span id="catalog-page-label"></span>
+        <button id="catalog-next" type="button" class="conversion-secondary" disabled>Next</button>
+      </div>
+      <section id="catalog-detail" class="catalog-detail" hidden></section>
+      <section id="catalog-admin" class="catalog-admin" hidden>
+        <h2>Catalog health</h2>
+        <button id="catalog-refresh-status" type="button" class="conversion-secondary">Refresh status</button>
+        <div id="catalog-status" role="status"></div>
+      </section>
+    </section>
 
     <section id="files-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="files-tab">
       <div id="path-header">Index of /</div>
@@ -153,7 +203,7 @@
     let selectionStart = null;
     let drawCanvas, drawCtx;
 
-    const SIDEBAR_MIN_PX = 160;
+    const SIDEBAR_MIN_PX = 300;
     const SIDEBAR_MAX_RATIO = 0.7;
     const SIDEBAR_WIDTH_KEY = "ome-viewer-sidebar-width";
 
@@ -169,6 +219,8 @@
         });
         if (tab.id === "incoming-tab") loadDirectory("", "incoming");
         if (tab.id === "processing-tab") loadProcessing();
+        if (tab.id === "files-tab") loadDirectory("");
+        if (tab.id === "catalog-tab") loadCatalog();
       });
     });
 
@@ -181,7 +233,7 @@
           document.getElementById("login-overlay").style.display = "none";
           document.getElementById("user-email-display").textContent = user.email;
           setProcessingUser(user);
-          loadDirectory("");
+          configureCatalog(user);
         } else {
           showLoginModal();
         }
@@ -218,7 +270,7 @@
           document.getElementById("user-email-display").textContent = user.email;
           document.getElementById("login-password").value = "";
           setProcessingUser(user);
-          loadDirectory("");
+          configureCatalog(user);
         } else {
           const errData = await res.json();
           errorEl.textContent = errData.detail || "Authentication failed";
@@ -251,7 +303,7 @@
         document.getElementById("login-overlay").style.display = "none";
         document.getElementById("user-email-display").textContent = user.email;
         setProcessingUser(user);
-        loadDirectory("");
+        configureCatalog(user);
       } catch (err) {
         errorEl.textContent = "Could not start a guest session";
         errorEl.hidden = false;
@@ -404,6 +456,7 @@
           // Immediately mark as loading so the user gets instant feedback
           document.querySelectorAll(".row").forEach(r => r.classList.remove("active", "loading"));
           row.classList.add("loading");
+          window.currentCatalogAsset = null;
           openImage(file.id, row, source);
         }, downloadUrl, file.size);
         listEl.appendChild(row);
@@ -551,7 +604,15 @@
         // Update metadata panel content
         const metaPanel = document.getElementById("metadata-panel");
         if (metaPanel) {
-          metaPanel.textContent = [info.metadata_summary, info.companion_metadata_summary]
+          const catalogRecord = window.currentCatalogAsset?.path === scanId
+            ? window.currentCatalogAsset : null;
+          const curated = catalogRecord ? [
+            `Catalog status: ${catalogRecord.status.replace("_", " ")}`,
+            `Specimen: ${catalogRecord.specimen_id || "unknown"}`,
+            `Plan: ${catalogRecord.plan_id || "unknown"}`,
+            `Tags: ${catalogRecord.tags.join(", ") || "none"}`
+          ].join("\n") : "";
+          metaPanel.textContent = [curated, info.metadata_summary, info.companion_metadata_summary]
             .filter(Boolean)
             .join("\n");
         }
@@ -939,6 +1000,7 @@
       }
     }
   </script>
-  <script src="processing.js"></script>
+  <script src="catalog.js?v=catalog-3"></script>
+  <script src="processing.js?v=catalog-3"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Install native libvips required by pyvips
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libvips42 \
+    && apt-get install -y --no-install-recommends ca-certificates libvips42 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pip requirements
