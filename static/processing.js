@@ -233,9 +233,10 @@ function renderConversionJobs(jobs) {
       open.className = "conversion-secondary";
       open.textContent = "Open result";
       open.addEventListener("click", () => {
-        document.getElementById("files-tab").click();
-        const parent = job.output_path.split("/").slice(0, -1).join("/");
-        loadDirectory(parent);
+        const library = document.getElementById("catalog-tab");
+        if (!library.hidden) library.click();
+        else document.getElementById("files-tab").click();
+        window.currentCatalogAsset = null;
         openImage(job.output_path);
       });
       card.appendChild(open);

@@ -1,9 +1,11 @@
 **/__pycache__
 **/.venv
+/.venv/
 **/.classpath
 **/.dockerignore
 **/.env
 **/.git
+/.git/
 **/.gitignore
 **/.project
 **/.settings
@@ -25,3 +27,5 @@
 **/values.dev.yaml
 LICENSE
 README.md
+/scans/
+/catalog-local.db

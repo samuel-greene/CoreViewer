@@ -18,6 +18,14 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
+
+from catalog import (
+    Account, Asset, CatalogUnavailable, as_utc, curate, database_url, get_asset,
+    get_catalog, record_submissions, reconcile_jobs, reindex_asset,
+    search as search_catalog, status_summary, verify,
+)
+from sqlalchemy import select
 
 from tile_service import (
     InvalidTileRequest,
@@ -413,6 +421,145 @@ def get_processing_user(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    return user
+
+
+def _catalog_or_503():
+    try:
+        catalog = get_catalog()
+        catalog.check_schema()
+        return catalog
+    except (CatalogUnavailable, SQLAlchemyError) as exc:
+        logger.warning("Catalog unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+
+
+@app.get("/api/catalog/config")
+def catalog_config(user: dict = Depends(get_current_user)):
+    enabled = bool(database_url())
+    return {
+        "enabled": enabled,
+        "default": enabled and os.environ.get("CATALOG_DEFAULT", "false").lower() == "true",
+        "legacy_browser": os.environ.get("CATALOG_LEGACY_BROWSER", "true").lower() == "true",
+    }
+
+
+@app.get("/api/catalog/search")
+def catalog_search(
+    q: str = "",
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    uploader: str | None = None,
+    verification: Literal["unverified", "needs_review", "verified"] | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    if len(q) > 200 or not 1 <= page <= 100000 or not 1 <= page_size <= 100:
+        raise HTTPException(status_code=422, detail="Invalid search parameters")
+    if date_from and date_to and as_utc(date_to) <= as_utc(date_from):
+        raise HTTPException(status_code=422, detail="End date must follow start date")
+    try:
+        catalog = _catalog_or_503()
+        catalog.account(user["email"], user["role"])
+        return search_catalog(catalog, query=q, date_from=date_from, date_to=date_to,
+                              uploader=uploader, verification=verification,
+                              page=page, page_size=page_size)
+    except SQLAlchemyError as exc:
+        logger.exception("Catalog search failed")
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+
+
+@app.get("/api/catalog/uploaders")
+def catalog_uploaders(user: dict = Depends(get_current_user)):
+    try:
+        catalog = _catalog_or_503()
+        with catalog.sessions() as db:
+            return [{"id": row.id, "email": row.email} for row in
+                    db.scalars(select(Account).join(Asset, Asset.uploader_id == Account.id)
+                               .distinct().order_by(Account.email)).all()]
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+
+
+@app.get("/api/catalog/assets/{asset_id}")
+def catalog_asset(asset_id: str, user: dict = Depends(get_current_user)):
+    try:
+        result = get_asset(_catalog_or_503(), asset_id)
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Catalog record not found")
+    return result
+
+
+class CatalogCorrection(BaseModel):
+    specimen_id: str | None = Field(default=None, max_length=200)
+    plan_id: str | None = Field(default=None, max_length=200)
+    acquired_at: datetime | None = None
+    tags: list[str] | None = Field(default=None, max_length=30)
+    reset_fields: list[Literal["specimen_id", "plan_id", "acquired_at"]] = Field(default_factory=list, max_length=3)
+
+
+@app.patch("/api/catalog/admin/assets/{asset_id}")
+def catalog_correct(asset_id: str, body: CatalogCorrection,
+                    user: dict = Depends(get_admin_user)):
+    catalog = _catalog_or_503()
+    changes = {key: getattr(body, key) for key in
+               (body.model_fields_set & {"specimen_id", "plan_id", "acquired_at"})}
+    try:
+        actor = catalog.account(user["email"], user["role"])
+        result = curate(catalog, asset_id, actor, changes,
+                        body.tags if "tags" in body.model_fields_set else None,
+                        body.reset_fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Catalog record not found")
+    return result
+
+
+@app.post("/api/catalog/admin/assets/{asset_id}/verify")
+def catalog_verify(asset_id: str, user: dict = Depends(get_admin_user)):
+    catalog = _catalog_or_503()
+    try:
+        actor = catalog.account(user["email"], user["role"])
+        result = verify(catalog, asset_id, actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Catalog record not found")
+    return result
+
+
+@app.post("/api/catalog/admin/assets/{asset_id}/reindex")
+def catalog_reindex(asset_id: str, user: dict = Depends(get_admin_user)):
+    try:
+        result = reindex_asset(_catalog_or_503(), MOUNT_DIR, asset_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Image file is missing") from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Catalog record not found")
+    return result
+
+
+@app.get("/api/catalog/admin/status")
+def catalog_status(user: dict = Depends(get_admin_user)):
+    try:
+        return status_summary(_catalog_or_503())
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Catalog is unavailable") from exc
+
+
 class ConversionRequest(BaseModel):
     folders: list[str] = Field(min_length=1, max_length=100)
     operation: Literal["ome", "cyclegan"] = "ome"
@@ -442,7 +589,13 @@ async def _generator_request(method: str, payload: dict | None = None) -> dict:
 
 @app.get("/api/processing")
 async def processing_status(user: dict = Depends(get_processing_user)):
-    return await _generator_request("GET")
+    result = await _generator_request("GET")
+    if database_url():
+        try:
+            reconcile_jobs(_catalog_or_503(), result["jobs"])
+        except (HTTPException, SQLAlchemyError):
+            logger.exception("Could not reconcile completed job provenance")
+    return result
 
 
 @app.post("/api/processing", status_code=202)
@@ -464,7 +617,15 @@ async def submit_conversion(body: ConversionRequest, user: dict = Depends(get_pr
         payload["operation"] = body.operation
     if body.retry_job_id:
         payload["retry_job_id"] = body.retry_job_id
-    return await _generator_request("POST", payload)
+    result = await _generator_request("POST", payload)
+    if database_url():
+        try:
+            catalog = _catalog_or_503()
+            actor = catalog.account(user["email"], user["role"])
+            record_submissions(catalog, result["jobs"], actor, folders)
+        except (HTTPException, SQLAlchemyError):
+            logger.exception("Could not save submission provenance")
+    return result
 
 
 @lru_cache(maxsize=512)

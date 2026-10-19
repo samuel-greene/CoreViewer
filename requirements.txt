@@ -5,3 +5,5 @@ numpy
 tifffile
 imagecodecs
 httpx>=0.27,<1
+SQLAlchemy>=2.0,<2.1
+psycopg[binary]>=3.2,<4

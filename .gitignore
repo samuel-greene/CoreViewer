@@ -4,6 +4,8 @@ __pycache__/
 scans/*
 scans/*.tif
 scans/*.tiff
+docs
 
 # Local dev secrets — never commit the real .env, only .env.example
 .env
+catalog-local.db
