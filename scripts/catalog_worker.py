@@ -72,7 +72,7 @@ def sync_generator_provenance() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "optimize", "once", "watch", "validate", "status"))
+    parser.add_argument("command", choices=("init", "optimize", "once", "watch", "events", "validate", "status"))
     parser.add_argument("--interval", type=int, default=int(os.environ.get("CATALOG_SCAN_INTERVAL", "180")))
     args = parser.parse_args()
     catalog = get_catalog()
@@ -91,6 +91,9 @@ def main() -> None:
         result = scan_once(catalog, root)
         sync_generator_provenance()
         print(json.dumps(result, indent=2))
+    elif args.command == "events":
+        from scripts.catalog_events import run
+        run(root)
     else:
         if args.interval < 60:
             parser.error("--interval must be at least 60 seconds")

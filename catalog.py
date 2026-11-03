@@ -232,8 +232,10 @@ def normalize_tags(values: Iterable[str]) -> list[str]:
 
 
 def _search_text(asset: Asset) -> str:
+    metadata = (asset.extracted or {}).get("search_metadata", [])
     return " ".join(str(value) for value in
-                    [asset.filename, asset.specimen_id or "", asset.plan_id or "", *asset.tags]).casefold()
+                    [asset.filename, asset.specimen_id or "", asset.plan_id or "",
+                     *asset.tags, *metadata]).casefold()
 
 
 def _date_and_source(asset: Asset) -> None:
@@ -263,19 +265,79 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _metadata_search_terms(ome_root: ET.Element | None, description: str,
+                           sidecars: list[dict]) -> list[str]:
+    """Keep human-readable metadata searchable without indexing tile arrays."""
+    terms: list[str] = []
+    seen: set[str] = set()
+    size = 0
+
+    def add(value: Any) -> None:
+        nonlocal size
+        if not isinstance(value, str):
+            return
+        term = re.sub(r"\s+", " ", value.strip())
+        key = term.casefold()
+        if (not term or len(term) > 2048 or key in seen or
+                size + len(term) > 8192 or len(terms) >= 128):
+            return
+        seen.add(key)
+        terms.append(term)
+        size += len(term)
+
+    if ome_root is None:
+        add(description)
+    else:
+        for element in ome_root.iter():
+            if _local_name(element.tag) in {"OME", "Pixels", "Plane", "TiffData", "BinData"}:
+                continue
+            for key, value in element.attrib.items():
+                key = _local_name(key)
+                if key in {"ID", "UUID"}:
+                    continue
+                add(key)
+                add(value)
+                if key == "NominalMagnification":
+                    try:
+                        add(f"{float(value):g}x")
+                    except ValueError:
+                        pass
+            add(element.text)
+
+    def add_json_fields(node: dict, depth: int = 0) -> None:
+        if depth > 4:
+            return
+        for key, value in node.items():
+            if key.casefold() in {"tiles", "planes", "images"}:
+                continue
+            if isinstance(value, str):
+                add(key)
+                add(value)
+            elif isinstance(value, dict):
+                add_json_fields(value, depth + 1)
+            # Arrays (especially per-tile metadata) are deliberately skipped.
+
+    for sidecar in sidecars:
+        add_json_fields(sidecar)
+    return terms
+
+
 def _extract_metadata(path: Path) -> tuple[dict, int | None, int | None, str | None]:
     """Read TIFF headers and small companion fields without decoding pixels."""
     data: dict[str, Any] = {}
     width = height = None
     errors = []
+    ome_root = None
+    description = ""
+    sidecars: list[dict] = []
     try:
         with tifffile.TiffFile(path) as tif:
             page = tif.pages[0]
             width, height = int(page.imagewidth), int(page.imagelength)
             description = page.description or ""
         if "<OME" in description:
-            root = ET.fromstring(description)
-            image = next((el for el in root.iter() if _local_name(el.tag) == "Image"), None)
+            ome_root = ET.fromstring(description)
+            image = next((el for el in ome_root.iter() if _local_name(el.tag) == "Image"), None)
             if image is not None:
                 data["image_name"] = image.get("Name")
                 for child in image:
@@ -294,6 +356,7 @@ def _extract_metadata(path: Path) -> tuple[dict, int | None, int | None, str | N
             raw = json.loads((path.parent / name).read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("not an object")
+            sidecars.append(raw)
             for source, target in (("specimenId", "specimen_id"), ("planId", "plan_id"),
                                    ("acquiredUtc", "acquired_at")):
                 if isinstance(raw.get(source), str) and raw[source].strip():
@@ -303,6 +366,7 @@ def _extract_metadata(path: Path) -> tuple[dict, int | None, int | None, str | N
         except (OSError, ValueError) as exc:
             errors.append(f"{name}: {type(exc).__name__}")
 
+    data["search_metadata"] = _metadata_search_terms(ome_root, description, sidecars)
     return data, width, height, "; ".join(errors) or None
 
 
@@ -396,7 +460,7 @@ def _record_file(db, root: Path, path: Path, run_id: str | None,
         asset.size_bytes != stat.st_size or asset.mtime_ns != stat.st_mtime_ns
         or asset.sidecar_signature != sidecars
     )
-    if new_asset or source_changed or force or renamed:
+    if new_asset or source_changed or force or renamed or "search_metadata" not in (asset.extracted or {}):
         before = dict(asset.extracted or {})
         extracted, width, height, error = _extract_metadata(path)
         asset.extracted = extracted
@@ -606,8 +670,8 @@ def search(catalog: Catalog, *, query: str = "", date_from: datetime | None = No
            verification: str | None = None, page: int = 1, page_size: int = 50) -> dict:
     catalog.check_schema()
     conditions = [Asset.status != "missing"]
-    if query.strip():
-        escaped = (query.strip().casefold().replace("\\", "\\\\")
+    for term in query.split():
+        escaped = (term.casefold().replace("\\", "\\\\")
                    .replace("%", "\\%").replace("_", "\\_"))
         conditions.append(Asset.search_text.like(f"%{escaped}%", escape="\\"))
     if date_from:

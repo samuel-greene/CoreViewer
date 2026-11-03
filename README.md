@@ -7,7 +7,7 @@ The viewer combines a FastAPI service, libvips image processing, and OpenSeadrag
 ## Product capabilities
 
 - Browse TIFF and OME-TIFF files in a mounted scan library, including nested folders.
-- Search a PostgreSQL-backed image catalog by filename, specimen ID, plan ID, and administrator tags; filter by UTC date, uploader, and verification status.
+- Search a PostgreSQL-backed image catalog by filename, specimen ID, plan ID, administrator tags, and TIFF/companion metadata keywords (for example, Brightfield, 20x, or a model name); filter by UTC date, uploader, and verification status.
 - Pan and zoom large pyramidal scans with on-demand JPEG tiles; no full-resolution browser download is required.
 - Inspect embedded OME metadata and companion `plan.json` / `ome-manifest.json` summaries alongside each scan.
 - Use temporary laser-pointer annotations, select a rectangular region, and export it as JPEG or TIFF.
@@ -104,9 +104,31 @@ python -m scripts.catalog_worker status
 
 After initial validation, run one long-lived worker using the same container image with the command `python -m scripts.catalog_worker watch`. It rescans the completed-image share every three minutes by default. New files settle for 60 seconds before indexing. Failed directory walks do not mark files missing; a file is marked missing only after two complete scans at least 24 hours apart. An empty share with existing catalog records is treated as a scan failure. A confidently recognized rename retains the record; uncertain replacements receive a new unverified record. Incoming acquisition folders are not indexed.
 
+The search index includes bounded text from OME-TIFF headers and scalar fields in `plan.json` and `ome-manifest.json`, including nested fields such as `model_name`; large per-tile arrays are skipped. Space-separated search terms can match across fields. After deploying an updated catalog worker, its next scan refreshes older records without changing their review status. A model name is searchable only if it is present in the TIFF or companion metadata; the generator's job-status response alone is not indexed.
+
 Every indexed image starts unverified. Administrators can correct specimen ID, plan ID, acquisition time, and free-form tags without modifying the TIFF or companion files. Original extracted fields and edit history remain in the record. Material source changes or corrections move a verified record to needs review. Authenticated generator submissions can identify an uploader only when a recorded job ID maps to a completed output path; guest or ambiguous jobs remain unknown. Ownership is nullable and not enforced in this release. All existing accounts, including guest, can search the same catalog. Before enabling private ownership in a future release, enforce it across search, info, tiles, downloads, crops, and legacy browsing routes.
 
 ## Conversion workflow
+
+### Event-driven acquisition pipeline
+
+The coordinated migration adds `CoreView.FileUpload` notifications from Acquisition client and
+`CoreView.OmeGenerated` notifications from the generator. Event Grid routes each
+event into a durable Service Bus queue. The generator automatically submits completed
+uploads for OME generation, and the separate catalog worker indexes each finalized
+output immediately using `python -m scripts.catalog_worker events`. The viewer
+continues to read the output share and PostgreSQL catalog.
+
+This path removes incoming-folder discovery, the upload-settle delay for completed
+event submissions, and recurring catalog share scans. The existing on-demand
+processing job retains its startup time. Acquisition client can eventually generate OME locally
+and publish the same finalized-output event directly to the catalog worker.
+
+See the [event contract and coordinated cutover](docs/event-pipeline.md). The new
+code is opt-in until its broker settings are configured and the worker command is
+changed; this repository update alone does not switch the deployed pipeline.
+
+### Manual submissions
 
 1. Mount the incoming scan share at `INCOMING_SCANS_DIR`.
 2. Upload a completed acquisition folder. It is eligible when it contains exactly one TIFF or JP2 file plus `plan.json` and `ome-manifest.json`.

@@ -4,7 +4,9 @@ __pycache__/
 scans/*
 scans/*.tif
 scans/*.tiff
-docs
+docs/*
+!docs/azure-event-research.md
+!docs/event-pipeline.md
 
 # Local dev secrets — never commit the real .env, only .env.example
 .env

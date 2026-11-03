@@ -84,6 +84,75 @@ class CatalogTests(unittest.TestCase):
         restored = curate(self.catalog, asset["id"], admin, {}, reset_fields=["specimen_id"])
         self.assertEqual(restored["specimen_id"], "Spec-2")
 
+    def test_searches_ome_and_companion_metadata_keywords(self):
+        ome = ('<OME xmlns="urn:ome"><Image Name="Field A">'
+               '<Description>Modality: Brightfield; Objective: 20x</Description>'
+               '<Pixels><Channel Name="RGB"/></Pixels></Image>'
+               '<StructuredAnnotations><MapAnnotation><Value>'
+               '<M K="model_name">stain-net-v2</M>'
+               '</Value></MapAnnotation></StructuredAnnotations></OME>')
+        tifffile.imwrite(self.image, np.zeros((12, 16), dtype=np.uint8),
+                         description=ome, metadata=None)
+        self.plan.write_text(json.dumps({"specimenId": "Spec-1", "planId": "Plan-1",
+                                         "inference": {"model_name": "companion-net-v4"},
+                                         "tiles": [{"modality": "array-only-decoy"}]}))
+        self.scan()
+
+        for keyword in ("brightfield", "20X", "stain-net-v2", "model_name",
+                        "companion-net-v4", "RGB"):
+            with self.subTest(keyword=keyword):
+                self.assertEqual(search(self.catalog, query=keyword)["total"], 1)
+        self.assertEqual(search(self.catalog, query="brightfield stain-net-v2")["total"], 1)
+        self.assertEqual(search(self.catalog, query="array-only-decoy")["total"], 0)
+
+        self.plan.write_text(json.dumps({"specimenId": "Spec-1", "planId": "Plan-1",
+                                         "modality": "Fluorescence", "objective": "40x"}))
+        tifffile.imwrite(self.image, np.zeros((12, 16), dtype=np.uint8), metadata=None)
+        self.scan()
+        self.assertEqual(search(self.catalog, query="brightfield")["total"], 0)
+        self.assertEqual(search(self.catalog, query="stain-net-v2")["total"], 0)
+        self.assertEqual(search(self.catalog, query="companion-net-v4")["total"], 0)
+        self.assertEqual(search(self.catalog, query="fluorescence 40x")["total"], 1)
+
+    def test_existing_record_refreshes_metadata_search_without_file_change(self):
+        self.plan.write_text(json.dumps({"specimenId": "Spec-1", "planId": "Plan-1",
+                                         "modality": "Brightfield"}))
+        self.scan()
+        asset_id = search(self.catalog)["items"][0]["id"]
+        verify(self.catalog, asset_id, self.catalog.account("admin@example.com", "admin"))
+        with self.catalog.sessions.begin() as db:
+            from catalog import Asset
+            asset = db.query(Asset).one()
+            asset.extracted = {key: value for key, value in asset.extracted.items()
+                               if key != "search_metadata"}
+            asset.search_text = "field 1.ome.tif spec-1 plan-1"
+        self.assertEqual(search(self.catalog, query="brightfield")["total"], 0)
+        self.scan()
+        self.assertEqual(search(self.catalog, query="brightfield")["total"], 1)
+        self.assertEqual(get_asset(self.catalog, asset_id)["status"], "verified")
+
+    def test_searches_manifest_and_tiff_description(self):
+        tifffile.imwrite(self.image, np.zeros((12, 16), dtype=np.uint8),
+                         description="Modality: Brightfield", metadata=None)
+        (self.folder / "ome-manifest.json").write_text(json.dumps({
+            "objective": "20x", "inference": {"model_name": "model-from-manifest"},
+            "tiles": [{"model_name": "tile-decoy"}],
+        }))
+        self.scan()
+        for keyword in ("brightfield", "20x", "model-from-manifest"):
+            with self.subTest(keyword=keyword):
+                self.assertEqual(search(self.catalog, query=keyword)["total"], 1)
+        self.assertEqual(search(self.catalog, query="tile-decoy")["total"], 0)
+
+    def test_ome_nominal_magnification_matches_20x(self):
+        ome = ('<OME xmlns="urn:ome"><Instrument>'
+               '<Objective NominalMagnification="20.0"/></Instrument>'
+               '<Image Name="Field A"/></OME>')
+        tifffile.imwrite(self.image, np.zeros((12, 16), dtype=np.uint8),
+                         description=ome, metadata=None)
+        self.scan()
+        self.assertEqual(search(self.catalog, query="20x")["total"], 1)
+
     def test_rename_missing_recovery_and_duplicate_copy(self):
         start = utcnow()
         self.scan(start)
