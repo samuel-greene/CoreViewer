@@ -120,3 +120,5 @@ The viewer displays the first TIFF/OME image plane; series and OME Z/C/T selecti
 ## Development history
 
 The commit graph preserves branch development, author names, dates, and PR merge relationships. Private content was removed throughout history, so commit hashes have changed and original commit signatures are not retained. Personal email addresses were replaced. [Development history](docs/HISTORY.md) records retained PR merge evidence and the limits of what Git can preserve; [public export notes](docs/PUBLIC_EXPORT.md) describe the sanitation scope.
+
+> **Note:** This is a sanitized public clone of the original CoreViewer project, with private data and deployment details removed.
