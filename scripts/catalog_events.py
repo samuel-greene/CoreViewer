@@ -21,7 +21,9 @@ def index_generated_image(catalog: Catalog, root: Path, event: dict) -> dict:
     data = event.get("data")
     if not isinstance(data, dict) or data.get("shareName") != "ome-tiff-share":
         raise ValueError("Expected the ome-tiff-share output share")
-    expected_account = os.environ.get("COREVIEW_STORAGE_ACCOUNT", "examplestorage")
+    expected_account = os.environ.get("COREVIEW_STORAGE_ACCOUNT", "").strip()
+    if not expected_account:
+        raise ValueError("COREVIEW_STORAGE_ACCOUNT must be configured explicitly")
     if data.get("storageAccount") != expected_account:
         raise ValueError("Unexpected storage account")
     relative = _safe_output_path(data.get("outputPath"))
@@ -88,6 +90,8 @@ def process_message(receiver, message, catalog: Catalog, root: Path, *, wait=tim
 
 
 def run(root: Path) -> None:
+    if not os.environ.get("COREVIEW_STORAGE_ACCOUNT", "").strip():
+        raise ValueError("COREVIEW_STORAGE_ACCOUNT must be configured explicitly")
     from azure.servicebus import AutoLockRenewer, ServiceBusClient
     from catalog import get_catalog
 

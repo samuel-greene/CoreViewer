@@ -70,6 +70,12 @@ class CatalogEventTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.index()
 
+    def test_storage_account_must_be_explicitly_configured(self):
+        for value in ("", "   "):
+            with self.subTest(value=value), patch.dict(os.environ, {"COREVIEW_STORAGE_ACCOUNT": value}):
+                with self.assertRaisesRegex(ValueError, "configured explicitly"):
+                    self.index()
+
     def test_unavailable_output_or_bad_metadata_retries_without_partial_record(self):
         with patch("catalog._extract_metadata", return_value=({}, None, None, "unreadable")):
             with self.assertRaises(CatalogUnavailable):

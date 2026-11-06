@@ -1,194 +1,122 @@
-# CoreView Online Viewer
+# CoreViewer
 
-CoreView Online Viewer is a web workspace for browsing large microscopy scans and managing their conversion to OME-TIFF. It is built for high-resolution TIFF and OME-TIFF data that is impractical to load in full in a browser: the application reads only the requested image regions and serves them as viewable tiles.
+A web viewer for large TIFF and OME-TIFF microscopy images, built with **FastAPI, libvips, OpenSeadragon, and SQLAlchemy**. The server reads requested image regions and returns Deep Zoom tiles, allowing the browser to navigate images without downloading the full-resolution scan.
 
-The viewer combines a FastAPI service, libvips image processing, and OpenSeadragon navigation with an operator workflow for submitting completed acquisition folders, tracking conversion jobs, and opening results from one place.
+This public portfolio edition includes the application, regression tests, optional event infrastructure, and sanitized development history. It contains no research scans, catalog databases, deployed-service credentials, or production runbooks. A procedural demo makes the viewer usable without private data.
 
-## Product capabilities
+## Features
 
-- Browse TIFF and OME-TIFF files in a mounted scan library, including nested folders.
-- Search a PostgreSQL-backed image catalog by filename, specimen ID, plan ID, administrator tags, and TIFF/companion metadata keywords (for example, Brightfield, 20x, or a model name); filter by UTC date, uploader, and verification status.
-- Pan and zoom large pyramidal scans with on-demand JPEG tiles; no full-resolution browser download is required.
-- Inspect embedded OME metadata and companion `plan.json` / `ome-manifest.json` summaries alongside each scan.
-- Use temporary laser-pointer annotations, select a rectangular region, and export it as JPEG or TIFF.
-- Download the original TIFF when needed.
-- Submit completed TIFF or JP2 acquisition folders for OME-TIFF generation.
-- Track queued, running, completed, and failed conversion jobs; retry failures and open completed results.
-- Optionally generate a CycleGAN virtual H&E OME-TIFF when the generator reports a configured GPU worker and model.
-- Provide controlled access to scan viewing and conversion workflows.
-- Run locally or in Azure Container Apps with separate incoming and output Azure Files mounts.
+- Pan and zoom tiled, pyramidal TIFF and OME-TIFF images.
+- Decode JPEG 2000 and DEFLATE TIFF variants, including supported 16-bit images.
+- Inspect embedded OME metadata and optional JSON sidecars.
+- Select a region and export JPEG or TIFF; download the original image.
+- Search an optional SQLite/PostgreSQL catalog, curate metadata, and track review status.
+- Browse incoming acquisition folders and track conversion jobs through a separately configured generator API.
+- Index completed images through an optional Azure Service Bus consumer with duplicate-safe updates and transient-failure retries.
+- Use signed sessions, user roles, and a guest demo workflow.
 
 ## Architecture
 
 ```text
-Browser (OpenSeadragon)
-        │
-        ▼
-CoreView Online Viewer ──► PostgreSQL catalog
-        │                       ▲
-        │ on-demand tiles       │ indexed metadata
-        ▼                       │
-mounted output scan library ─► catalog worker
-        ▲
-        │ generated images
-OME-TIFF generator ◄── Viewer job requests ◄── mounted incoming scan library
+Browser / OpenSeadragon
+        |
+        v
+FastAPI viewer -----------> SQLAlchemy catalog (optional)
+        |                          ^
+        v                          |
+libvips / TIFF codecs       separate catalog worker
+        |                          ^
+        v                          |
+mounted image library ------+------+
+
+Optional integrations:
+incoming folders -> external conversion API -> image library
+finalized-image events -> Service Bus -> catalog worker
 ```
 
-The browser does not upload image bytes for conversion. The viewer validates each selected folder against the incoming mount and sends only its path and the requesting identity to the private generator service.
+Image bytes stay on the filesystem or mounted share. Catalog records hold extracted metadata, curation, provenance, and review history. The viewer works locally without Azure, PostgreSQL, or a conversion service.
 
-The catalog stores paths, extracted metadata, administrator corrections, tags, provenance, and review history. Image bytes stay on Azure Files. Search results are text rows; no previews or thumbnails are stored or displayed. The existing viewer still renders tiles on demand after an image is opened.
+## Run the synthetic demo
 
-## Quick start
-
-### Prerequisites
-
-- Python 3.10 or newer
-- Native [libvips](https://www.libvips.org/) runtime
-
-Install libvips for your platform:
-
-- macOS: `brew install vips`
-- Ubuntu/Debian: `sudo apt install libvips42`
-- Windows: install the full `vips-dev-x64-all-*.zip` package from the [libvips Windows releases](https://github.com/libvips/build-win64-mxe/releases), then add its `bin` directory to `PATH`. The full package is needed for libvips-native JPEG 2000 TIFF variants.
-
-From the repository root, create a virtual environment and install dependencies:
+Use Python 3.10+ and a native libvips runtime. On macOS, install libvips with `brew install vips`; on Ubuntu/Debian use `sudo apt install libvips-dev`. Windows users can install a full [libvips runtime](https://github.com/libvips/build-win64-mxe/releases) and add its `bin` directory to `PATH`.
 
 ```bash
 python3 -m venv .venv
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-# macOS/Linux
 source .venv/bin/activate
-
+# Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+python scripts/create_demo_scan.py
+uvicorn main:app --reload --host 127.0.0.1
 ```
 
-Place pyramidal `.tif` or `.tiff` files in [`scans/`](scans/README.md), then start the service:
+Open <http://127.0.0.1:8000> and choose **Continue as Guest**. The generated `synthetic-demo.tif` is a tiled pyramid made entirely from mathematical patterns; it contains no acquired image or specimen data. The generator refuses to overwrite an existing file. Generated files in `scans/` are ignored by Git.
 
-```bash
-uvicorn main:app --reload
-```
+For an administrator account, set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in your shell before starting the server. Generate a session key with `python -c "import secrets; print(secrets.token_hex(32))"` and set `SECRET_KEY` to the result. Alternatively, generate multi-user entries with `python scripts/make_user.py` and supply `USERS_JSON`.
 
-Open <http://127.0.0.1:8000>.
+The unconfigured local application has a development-only administrator (`admin@example.com` / `change-me!`) and an ephemeral session key. Guest sessions can browse mounted scans. Use synthetic data for public demonstrations; configure authentication and access controls before attaching private datasets or exposing a service. Publishing this source repository does not deploy the application.
 
-## Deployment configuration
+## Configuration
 
-The viewer discovers its output scan library in this order: `IMAGES_DIR`, `/mnt/images`, then the local `scans/` directory. In Azure, the viewer and generator must mount the same output share, although their mount paths may differ.
+[`.env.example`](.env.example) lists supported settings using placeholders. The application reads process environment variables; it does **not** automatically load `.env`. If using an environment-file loader, keep the real file out of Git.
 
-| Variable | Purpose | Local default |
+| Variable | Purpose | Default |
 | --- | --- | --- |
-| `IMAGES_DIR` | Directory containing viewable TIFF/OME-TIFF output. | `scans/` when `/mnt/images` is absent |
-| `INCOMING_SCANS_DIR` | Read-only directory containing acquisition folders for conversion. | `/mnt/incoming-scans` |
-| `OME_GENERATOR_URL` | Internal base URL of the compatible OME-TIFF generator job API. | Not configured |
-| `DATABASE_URL` | SQLAlchemy URL for the catalog. Azure PostgreSQL connections require verified TLS and a readable CA bundle. | Not configured; folder browser remains available |
-| `CATALOG_DEFAULT` | Make catalog search the default library interface after backfill validation. | `false` |
-| `CATALOG_LEGACY_BROWSER` | Keep an admin-only Folders tab during catalog rollout; set `false` to retire it. | `true` |
-| `CATALOG_SCAN_INTERVAL` | Seconds between completed-image share scans in the separate worker. | `180` |
+| `IMAGES_DIR` | Viewable image library | `/mnt/images` if present, otherwise `scans/` |
+| `INCOMING_SCANS_DIR` | Incoming acquisition folders | `/mnt/incoming-scans` |
+| `SECRET_KEY` | Session signing key | Random per process |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Single administrator account | Local development values above |
+| `USERS_JSON` | JSON array of users with password hashes and roles | Unset |
+| `HTTPS_ONLY` | Require HTTPS for session cookies | `false` |
+| `ALLOW_GUEST_PROCESSING` | Allow guest conversion submissions | `true`; sample configuration uses `false` |
+| `OME_GENERATOR_URL` | Compatible external conversion job API | Unset |
+| `DATABASE_URL` | Optional SQLAlchemy catalog connection | Unset |
+| `CATALOG_DEFAULT` | Use catalog search as the default interface | `false` |
+| `CATALOG_LEGACY_BROWSER` | Retain administrator folder browsing after catalog rollout | `true` |
+| `CATALOG_SCAN_INTERVAL` | Polling worker interval in seconds | `180` |
 
-Keep the generator on private Container Apps ingress. The generator must expose the matching manual job API. See the [generator deployment guide](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/azure-deployment.md) for coordinated deployment details.
+Conversion and optional virtual H&E controls require a compatible external generator; that service and its models are not bundled here. TIFF viewing, metadata, navigation, and exports work independently.
 
-## Catalog setup and rollout
+## Optional catalog
 
-The catalog is optional until it is initialized. For local development, set `DATABASE_URL=sqlite:///./catalog-local.db`. Production uses Azure Database for PostgreSQL Flexible Server; keep the database URL in a secret and use a private connection or your organization's approved network controls. Give the worker and viewer the same output-share mount, but run **one** worker process independently of the web replicas.
-
-Run these commands in the application image with `DATABASE_URL` and `IMAGES_DIR` set:
+Set `DATABASE_URL=sqlite:///./catalog-local.db` in your environment for local development, then initialize and import:
 
 ```bash
 python -m scripts.catalog_worker init
 python -m scripts.catalog_worker once
 python -m scripts.catalog_worker validate
-python -m scripts.catalog_worker status
 ```
 
-`validate` compares currently present TIFF paths with non-missing catalog records and reports samples of discrepancies and metadata errors. Resolve discrepancies and inspect representative image records before setting `CATALOG_DEFAULT=true`. While it is false, administrators can inspect the Library tab and all users retain the folder browser. After the switch, ordinary users enter Library; administrators retain Folders as a rollout fallback. Set `CATALOG_LEGACY_BROWSER=false` after the transition to retire folder navigation. A database outage produces an explicit catalog error, not an empty result set.
+The polling importer waits for files to settle for 60 seconds. Run the import after that interval, or use `python -m scripts.catalog_worker watch`. Set `CATALOG_DEFAULT=true` before starting the viewer to make the catalog the default interface. The database is local runtime data and is ignored by Git.
 
-After initial validation, run one long-lived worker using the same container image with the command `python -m scripts.catalog_worker watch`. It rescans the completed-image share every three minutes by default. New files settle for 60 seconds before indexing. Failed directory walks do not mark files missing; a file is marked missing only after two complete scans at least 24 hours apart. An empty share with existing catalog records is treated as a scan failure. A confidently recognized rename retains the record; uncertain replacements receive a new unverified record. Incoming acquisition folders are not indexed.
+PostgreSQL is supported through SQLAlchemy/psycopg. Azure PostgreSQL connections require `sslmode=verify-full` and a readable CA bundle. The worker must use the same image library and database as the viewer. See [event integration](docs/event-pipeline.md) for the event-driven importer.
 
-The search index includes bounded text from OME-TIFF headers and scalar fields in `plan.json` and `ome-manifest.json`, including nested fields such as `model_name`; large per-tile arrays are skipped. Space-separated search terms can match across fields. After deploying an updated catalog worker, its next scan refreshes older records without changing their review status. A model name is searchable only if it is present in the TIFF or companion metadata; the generator's job-status response alone is not indexed.
-
-Every indexed image starts unverified. Administrators can correct specimen ID, plan ID, acquisition time, and free-form tags without modifying the TIFF or companion files. Original extracted fields and edit history remain in the record. Material source changes or corrections move a verified record to needs review. Authenticated generator submissions can identify an uploader only when a recorded job ID maps to a completed output path; guest or ambiguous jobs remain unknown. Ownership is nullable and not enforced in this release. All existing accounts, including guest, can search the same catalog. Before enabling private ownership in a future release, enforce it across search, info, tiles, downloads, crops, and legacy browsing routes.
-
-## Conversion workflow
-
-### Event-driven acquisition pipeline
-
-The coordinated migration adds `CoreView.FileUpload` notifications from Acquisition client and
-`CoreView.OmeGenerated` notifications from the generator. Event Grid routes each
-event into a durable Service Bus queue. The generator automatically submits completed
-uploads for OME generation, and the separate catalog worker indexes each finalized
-output immediately using `python -m scripts.catalog_worker events`. The viewer
-continues to read the output share and PostgreSQL catalog.
-
-This path removes incoming-folder discovery, the upload-settle delay for completed
-event submissions, and recurring catalog share scans. The existing on-demand
-processing job retains its startup time. Acquisition client can eventually generate OME locally
-and publish the same finalized-output event directly to the catalog worker.
-
-See the [event contract and coordinated cutover](docs/event-pipeline.md). The new
-code is opt-in until its broker settings are configured and the worker command is
-changed; this repository update alone does not switch the deployed pipeline.
-
-### Manual submissions
-
-1. Mount the incoming scan share at `INCOMING_SCANS_DIR`.
-2. Upload a completed acquisition folder. It is eligible when it contains exactly one TIFF or JP2 file plus `plan.json` and `ome-manifest.json`.
-3. In **Incoming**, select one or more eligible folders and choose either **Generate OME-TIFF** or, when available, **Generate virtual H&E**.
-4. Follow the job in **Processing**. Jobs continue after the browser closes, and the page refreshes the job state while it is in use.
-5. Use **Open result** after successful completion to open the generated scan from the output library.
-
-The Incoming tab intentionally does not open or download source images. Submit folders only after uploads finish.
-
-### Optional virtual H&E
-
-The CycleGAN virtual H&E option is shown only when the generator reports an available GPU worker and model. It creates a separate OME-TIFF and preserves the requested operation and input identity when a job is retried. Conventional OME-TIFF export remains available without GPU inference.
-
-Deploy the matching generator revision and complete its [GPU and model setup](https://github.com/upstream/Azure-OME-tiff-generator/blob/main/docs/cyclegan-inference.md) before enabling this workflow.
-
-## TIFF handling and performance
-
-CoreView maps each Deep Zoom request to the most appropriate native TIFF pyramid level, crops only the needed source region, resizes it to the requested tile, and returns JPEG to the viewer. It first detects libvips-exposed SubIFD pyramid layers, then falls back to a compatible top-level TIFF page chain. This avoids mistaking equal-sized OME Z/C/T pages for zoom levels.
-
-Standard JPEG 2000 TIFF compression (tag 34712) is decoded region-by-region with `tifffile` and `imagecodecs`. Bio-Formats/Aperio-style JPEG 2000 TIFF tags supported by the installed libvips build are handled through libvips. Reads are strict: unsupported layouts or damaged segments return explicit errors rather than silent blank imagery.
-
-Tiled pyramidal TIFFs provide the best experience. Non-pyramidal images are still viewable but may be slower at low zoom because they must be downsampled from the full-resolution page.
-
-## Deployment notes
-
-Keep the incoming share read-only to the viewer and the generator ingress private. Apply your organization’s standard access controls and secret-management practices to the deployed service and its storage mounts.
-
-## Supported formats and current boundaries
-
-- TIFF and OME-TIFF files with 8- or 16-bit grayscale or RGB data and top-left orientation are supported by the JPEG 2000 region decoder.
-- The viewer displays the first TIFF/OME image plane. Series and OME Z/C/T selection are not yet available.
-- Some vendor files mix scenes, planes, associated images, and pyramid levels in ways that cannot be identified reliably. Pyramid discovery stops on a dimension mismatch rather than guessing.
-- 16-bit data is converted to 8-bit for JPEG tiles without whole-image intensity analysis. Fluorescence workflows may need future window/level controls.
-- JPEG exports preserve grayscale or the first three visible bands; alpha and more than three channels are not preserved.
-- Standalone `.jp2` files are not viewed directly; they may be submitted in completed incoming folders for conversion. Other vendor-specific compression layouts require representative-file validation.
-
-## Verification and container image
-
-Run the test suite with:
+## Tests and containers
 
 ```bash
-python3 -m unittest discover -s tests
+python -m unittest discover -s tests -v
+docker build -t coreviewer .
+docker run --rm -p 127.0.0.1:8000:8000 -v "$(pwd)/scans:/mnt/images:ro" coreviewer
 ```
 
-The test suite covers incoming-folder validation, JP2 intake, conversion-job proxying, inference submission and retry identity, TIFF pyramid discovery, JPEG 2000 and DEFLATE decoding, region-only reads, 16-bit tiles, metadata summaries, and decoder error propagation. The `Dockerfile` installs libvips and runs these tests during image build, so a codec-incompatible build fails before deployment.
-
-Build and run the container locally:
-
-```bash
-docker build -t coreview-online-viewer .
-docker run --rm -p 8000:8000 -v "$(pwd)/scans:/mnt/images:ro" coreview-online-viewer
-```
+Tests generate temporary images and databases. Coverage includes authentication, catalog curation, event replay and retries, incoming-folder validation, conversion proxy behavior, TIFF pyramid selection, region reads, JPEG 2000/DEFLATE decoding, and exports. The container build runs the suite against its native codec runtime. GitHub Actions runs tests only; this edition has no automatic cloud deployment workflow.
 
 ## Repository guide
 
 | Path | Responsibility |
 | --- | --- |
-| [`main.py`](main.py) | FastAPI application, scan and processing APIs, metadata summaries, and export endpoints. |
-| [`tile_service.py`](tile_service.py) | TIFF pyramid discovery, Deep Zoom mapping, region reads, rendering, annotations, and crop encoding. |
-| [`static/`](static/) | Browser interface, scan browser, processing UI, and OpenSeadragon integration. |
-| [`scans/`](scans/README.md) | Local development scan library; large scan files should not be committed. |
-| [`tests/`](tests/) | Processing and codec regression coverage. |
-| [`scripts/`](scripts/) | Imaging-support utilities. |
+| `main.py` | FastAPI routes, authentication, processing proxy, metadata, and exports |
+| `tile_service.py` | Pyramid discovery, region decoding, tiles, and crops |
+| `catalog.py` | Persistence, indexing, search, curation, and reconciliation |
+| `static/` | Browser interface and OpenSeadragon integration |
+| `scripts/catalog_worker.py` | Catalog setup, import, validation, and receiver commands |
+| `scripts/create_demo_scan.py` | Procedural synthetic image generator |
+| `infra/pipeline-events.bicep` | Parameterized optional broker infrastructure |
+| `tests/` | Application and codec regression suite |
+
+## Boundaries
+
+The viewer displays the first TIFF/OME image plane; series and OME Z/C/T selection are not implemented. JPEG tiles convert 16-bit data to 8-bit without interactive window/level controls. JPEG exports use grayscale or the first three visible bands. Standalone JP2 files are conversion inputs rather than directly viewable scans. Unsupported or damaged TIFF layouts return errors.
+
+## Development history
+
+The commit graph preserves branch development, author names, dates, and PR merge relationships. Private content was removed throughout history, so commit hashes have changed and original commit signatures are not retained. Personal email addresses were replaced. [Development history](docs/HISTORY.md) records retained PR merge evidence and the limits of what Git can preserve; [public export notes](docs/PUBLIC_EXPORT.md) describe the sanitation scope.

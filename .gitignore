@@ -1,13 +1,57 @@
+# Python and tools
 __pycache__/
+*.py[cod]
 .venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
 .DS_Store
-scans/*
-scans/*.tif
-scans/*.tiff
-docs/*
-!docs/azure-event-research.md
-!docs/event-pipeline.md
+Thumbs.db
 
-# Local dev secrets — never commit the real .env, only .env.example
+# Secrets and local settings
 .env
-catalog-local.db
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.aws/
+.azure/
+secrets/
+credentials*.json
+*.tfstate*
+*.tfvars
+
+# Runtime data, scientific images, generated exports, and local diagnostics
+scans/*
+!scans/README.md
+incoming/
+data/
+exports/
+models/
+*.db
+*.db-*
+*.sqlite*
+*.tif
+*.tiff
+*.jp2
+*.svs
+*.ndpi
+*.czi
+*.png
+*.jpg
+*.jpeg
+*.log
+.build-info.json
+
+# Keep local operational records and backups out of the public repository
+private/
+backups/
+*private-backup*/
+docs/private*/
+docs/*deployment*.md

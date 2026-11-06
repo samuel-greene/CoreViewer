@@ -1,8 +1,8 @@
-// Additive infrastructure only. Does not change live apps, mounts, or SQL.
+// Optional example infrastructure. Supply your own existing storage account.
 param location string = resourceGroup().location
 param topicName string = 'coreview-pipeline-events'
 param namespaceName string = 'coreview-pipeline-${uniqueString(resourceGroup().id)}'
-param storageAccountName string = 'examplestorage'
+param storageAccountName string
 
 resource topic 'Microsoft.EventGrid/topics@2022-06-15' = {
   name: topicName
